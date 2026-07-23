@@ -5,7 +5,7 @@ import {
   Save, ChevronUp, ChevronDown, AlertTriangle, CheckCircle, Network, 
   Radar, Terminal, UserSearch, Award, Shield, UserCheck, Layers, 
   Megaphone, Send, Upload, Scale, Folder, Coins, ShieldAlert, CheckCircle2, Globe,
-  CheckSquare, Square, History, Printer
+  CheckSquare, Square, History, Printer, Trash2, X
 } from "lucide-react";
 import { cn } from "./lib/utils";
 import { Button, buttonVariants } from "./components/ui/button";
@@ -28,6 +28,8 @@ import { CaliforniaSpecialTools } from "./components/CaliforniaSpecialTools";
 import { OutreachAndDataTools } from "./components/OutreachAndDataTools";
 import { LeadHistoryModal } from "./components/LeadHistoryModal";
 import { PrintCaseModal } from "./components/PrintCaseModal";
+import { SpecializedAssetSearch } from "./components/SpecializedAssetSearch";
+import { LostAssetsIQLogo } from "./components/LostAssetsIQLogo";
 
 import { AssetRecord, Relative, SavedCase, SearchQuery, RecentSearch } from "./types";
 import { searchLostAssets, trackRelatives, AVAILABLE_STATES, ASSET_TYPES } from "./services/mockDataService";
@@ -60,7 +62,7 @@ export function recommendCategoryName(fName: string, lName: string, state: strin
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<
-    "client_intake" | "search_workbench" | "saved_cases" | "ca_bundling" | 
+    "client_intake" | "search_workbench" | "saved_cases" | "specialized_search" | "ca_bundling" | 
     "asset_combiner" | "ca_investigator_hub" | "campaigns" | "trace_osint" | 
     "multistate_search" | "hermes" | "asset_db" | "regulations" | "import_csv"
   >("client_intake");
@@ -112,6 +114,67 @@ export default function App() {
   const [saveCategoryName, setSaveCategoryName] = useState("");
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [dbStateFilter, setDbStateFilter] = useState("");
+  
+  // Bulk selection state for saved cases
+  const [selectedCaseIds, setSelectedCaseIds] = useState<string[]>([]);
+  const [bulkStatusToApply, setBulkStatusToApply] = useState<"Lead" | "Intake" | "Evidence" | "Submitted" | "Review" | "Paid">("Submitted");
+  const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
+  const [bulkActionNotification, setBulkActionNotification] = useState<string | null>(null);
+
+  const toggleSelectCase = (id: string) => {
+    setSelectedCaseIds(prev => 
+      prev.includes(id) ? prev.filter(cId => cId !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllCases = (casesToSelect: SavedCase[]) => {
+    const allIds = casesToSelect.map(c => c.id);
+    const isAllSelected = allIds.length > 0 && allIds.every(id => selectedCaseIds.includes(id));
+    if (isAllSelected) {
+      setSelectedCaseIds([]);
+    } else {
+      setSelectedCaseIds(allIds);
+    }
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedCaseIds.length === 0) return;
+    const count = selectedCaseIds.length;
+    const updated = savedCases.filter(c => !selectedCaseIds.includes(c.id));
+    setSavedCases(updated);
+    saveAllCases(updated);
+    setSelectedCaseIds([]);
+    setBulkDeleteConfirmOpen(false);
+    setBulkActionNotification(`Successfully deleted ${count} saved case folder${count > 1 ? "s" : ""}.`);
+    setTimeout(() => setBulkActionNotification(null), 4000);
+  };
+
+  const handleBulkStatusUpdate = (newStatus: "Lead" | "Intake" | "Evidence" | "Submitted" | "Review" | "Paid") => {
+    if (selectedCaseIds.length === 0) return;
+    const count = selectedCaseIds.length;
+    const updated = savedCases.map(c => {
+      if (selectedCaseIds.includes(c.id)) {
+        const oldStage = c.status || "Lead";
+        return {
+          ...c,
+          status: newStatus,
+          timeline: [
+            ...(c.timeline || []),
+            {
+              date: new Date().toLocaleDateString(),
+              stage: `${newStatus} Stage`,
+              desc: `Bulk status update applied. Stage changed from ${oldStage} to ${newStatus}.`
+            }
+          ]
+        };
+      }
+      return c;
+    });
+    setSavedCases(updated);
+    saveAllCases(updated);
+    setBulkActionNotification(`Updated stage for ${count} case folder${count > 1 ? "s" : ""} to "${newStatus}".`);
+    setTimeout(() => setBulkActionNotification(null), 4000);
+  };
   
   // Interactive CRM notes and claim number edit state mapping
   const [caseNotesEditing, setCaseNotesEditing] = useState<Record<string, string>>({});
@@ -420,6 +483,7 @@ export default function App() {
   const handleDeleteCase = (id: string) => {
     deleteCase(id);
     setSavedCases(savedCases.filter(c => c.id !== id));
+    setSelectedCaseIds(prev => prev.filter(cId => cId !== id));
   };
 
   const copyToClipboard = async () => {
@@ -446,16 +510,8 @@ export default function App() {
       <aside className="hidden md:flex flex-col w-64 fixed inset-y-0 left-0 bg-[#09090b] border-r border-neutral-900 z-20">
         
         {/* Sidebar Header Title lockup */}
-        <div className="p-5 border-b border-neutral-900 flex items-center space-x-3 bg-neutral-950/40">
-          <div className="bg-indigo-500/15 p-2 rounded-lg border border-indigo-500/30">
-            <Award className="w-5 h-5 text-indigo-400 animate-pulse" />
-          </div>
-          <div>
-            <div className="text-sm font-bold tracking-wider text-neutral-100 font-sans flex items-center gap-1">
-              <span>RECLAIM</span><span className="text-indigo-400">IQ</span>
-            </div>
-            <div className="text-[9px] uppercase tracking-widest text-neutral-400 font-bold font-mono">ASSET INTELLIGENCE</div>
-          </div>
+        <div className="p-4 border-b border-neutral-900 bg-neutral-950/60">
+          <LostAssetsIQLogo size="md" />
         </div>
 
         {/* Sidebar Navigation */}
@@ -504,6 +560,22 @@ export default function App() {
             >
               <Folder className={cn("w-4 h-4", activeTab === "saved_cases" ? "text-orange-500" : "text-neutral-500")} />
               <span>SAVED CASES</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab("specialized_search")}
+              className={cn(
+                "w-full flex items-center space-x-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all text-left relative",
+                activeTab === "specialized_search" 
+                  ? "bg-orange-500/10 text-orange-400 border border-orange-500/20 shadow-sm" 
+                  : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/40"
+              )}
+            >
+              <Coins className={cn("w-4 h-4", activeTab === "specialized_search" ? "text-orange-500" : "text-neutral-500")} />
+              <div className="flex flex-col">
+                <span>12-FIELD ASSET SEARCH</span>
+                <span className="text-[9px] text-orange-400 font-mono font-normal">NAUPA, PBGC, Bonds, VA</span>
+              </div>
             </button>
           </div>
 
@@ -666,10 +738,7 @@ export default function App() {
 
       {/* MOBILE HEADER BAR */}
       <header className="md:hidden flex items-center justify-between h-14 px-4 border-b border-neutral-900 bg-[#09090b] sticky top-0 z-30">
-        <div className="flex items-center space-x-2">
-          <Award className="w-5 h-5 text-orange-450" />
-          <span className="text-xs font-bold tracking-wider flex items-center gap-0.5"><span>RECLAIM</span><span className="text-orange-400">IQ</span></span>
-        </div>
+        <LostAssetsIQLogo size="sm" />
         
         <Button 
           variant="outline" 
@@ -1276,6 +1345,11 @@ export default function App() {
 
              const totalSum = chartData.reduce((sum, item) => sum + item.amount, 0);
 
+             const selectedCasesList = savedCases.filter(c => selectedCaseIds.includes(c.id));
+             const selectedTotalValue = selectedCasesList.reduce((sum, c) => {
+                return sum + c.assets.reduce((assetSum, a) => assetSum + a.amount, 0);
+             }, 0);
+
              return (
              <div className="space-y-6 animate-fade-in">
                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-neutral-900 pb-4">
@@ -1283,7 +1357,27 @@ export default function App() {
                     <h2 className="text-2xl font-bold tracking-tight text-neutral-100">Saved Lead Folders</h2>
                     <p className="text-neutral-450 text-xs text-orange-400">A unified active recovery CRM tracking leads, documents, and executor communications.</p>
                   </div>
-                  <div className="flex items-center space-x-4">
+                  <div className="flex items-center flex-wrap gap-3">
+                     {filteredCases.length > 0 && (
+                       <Button
+                         variant="outline"
+                         size="sm"
+                         onClick={() => handleSelectAllCases(filteredCases)}
+                         className="h-9 border-neutral-850 bg-neutral-950 hover:bg-neutral-900 text-neutral-300 font-mono text-xs flex items-center gap-1.5 cursor-pointer"
+                       >
+                         {filteredCases.length > 0 && filteredCases.every(c => selectedCaseIds.includes(c.id)) ? (
+                           <>
+                             <CheckSquare className="w-4 h-4 text-orange-400" />
+                             Deselect All ({filteredCases.length})
+                           </>
+                         ) : (
+                           <>
+                             <Square className="w-4 h-4 text-neutral-400" />
+                             Select All ({filteredCases.length})
+                           </>
+                         )}
+                       </Button>
+                     )}
                      <select 
                         value={dbStateFilter}
                         onChange={e => setDbStateFilter(e.target.value)}
@@ -1404,13 +1498,35 @@ export default function App() {
                      {filteredCases.map((savedCase) => {
                         const totalAmount = savedCase.assets.reduce((sum, a) => sum + a.amount, 0);
                         return (
-                           <Card key={savedCase.id} className="border-neutral-900 bg-neutral-950 overflow-hidden rounded-xl">
+                           <Card key={savedCase.id} className={cn("border-neutral-900 bg-neutral-950 overflow-hidden rounded-xl transition-all duration-200", selectedCaseIds.includes(savedCase.id) && "border-orange-500/60 bg-[#061019] ring-1 ring-orange-500/30 shadow-[0_0_20px_rgba(249,115,22,0.1)]")}>
                               <CardHeader className="bg-neutral-900/40 border-b border-neutral-900 flex flex-row items-center justify-between py-4 px-6">
-                                 <div>
-                                   <CardTitle className="text-sm font-semibold text-orange-400 font-mono">{savedCase.categoryName}</CardTitle>
-                                   <CardDescription className="font-mono text-[10px] mt-1 text-neutral-500">
-                                      Folder Reference: {savedCase.id} | Opened: {new Date(savedCase.createdAt).toLocaleDateString()}
-                                   </CardDescription>
+                                 <div className="flex items-center space-x-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleSelectCase(savedCase.id)}
+                                      className={cn(
+                                        "w-5 h-5 rounded border flex items-center justify-center transition-all cursor-pointer shrink-0",
+                                        selectedCaseIds.includes(savedCase.id)
+                                          ? "bg-orange-500 border-orange-400 text-black shadow-[0_0_10px_rgba(249,115,22,0.4)]"
+                                          : "border-neutral-700 bg-neutral-900 hover:border-neutral-500 text-transparent"
+                                      )}
+                                      title={selectedCaseIds.includes(savedCase.id) ? "Deselect folder" : "Select folder"}
+                                    >
+                                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+                                    </button>
+                                    <div>
+                                      <div className="flex items-center gap-2">
+                                        <CardTitle className="text-sm font-semibold text-orange-400 font-mono">{savedCase.categoryName}</CardTitle>
+                                        {savedCase.status && (
+                                          <Badge variant="outline" className="text-[10px] font-mono border-neutral-800 bg-neutral-900 text-neutral-300">
+                                            {savedCase.status}
+                                          </Badge>
+                                        )}
+                                      </div>
+                                      <CardDescription className="font-mono text-[10px] mt-1 text-neutral-500">
+                                         Folder Reference: {savedCase.id} | Opened: {new Date(savedCase.createdAt).toLocaleDateString()}
+                                      </CardDescription>
+                                    </div>
                                  </div>
                                  <div className="flex items-center gap-2">
                                     <Dialog>
@@ -1688,6 +1804,120 @@ export default function App() {
                      })}
                   </div>
                )}
+
+                {/* PERSISTENT BULK ACTION TOOLBAR */}
+                {selectedCaseIds.length > 0 && (
+                  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-4xl bg-neutral-950/95 border border-orange-500/40 shadow-[0_0_40px_rgba(0,0,0,0.85)] backdrop-blur-md rounded-2xl p-4 transition-all duration-300 animate-in fade-in slide-in-from-bottom-5">
+                    <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+                      {/* Selected Info */}
+                      <div className="flex items-center space-x-3">
+                        <div className="p-2.5 rounded-xl bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                          <CheckSquare className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center space-x-2">
+                            <span className="font-mono text-xs font-bold text-neutral-100 uppercase tracking-wider">
+                              {selectedCaseIds.length} Folder{selectedCaseIds.length > 1 ? "s" : ""} Selected
+                            </span>
+                            <span className="text-neutral-600">•</span>
+                            <span className="font-mono text-xs font-bold text-emerald-400">
+                              ${selectedTotalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Total Value
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-neutral-450 font-mono mt-0.5">
+                            Batch status updates or bulk delete selected case folders
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Action Controls */}
+                      <div className="flex items-center flex-wrap gap-2.5">
+                        {/* Bulk Status Update */}
+                        <div className="flex items-center space-x-1.5 bg-neutral-900 border border-neutral-800 p-1 rounded-lg">
+                          <span className="text-[10px] font-mono text-neutral-400 uppercase px-2 font-semibold">Stage:</span>
+                          <select
+                            value={bulkStatusToApply}
+                            onChange={(e) => setBulkStatusToApply(e.target.value as any)}
+                            className="h-8 rounded border border-neutral-850 bg-neutral-950 px-2 text-xs font-mono text-neutral-200 focus:outline-none focus:border-orange-500"
+                          >
+                            <option value="Lead">Lead</option>
+                            <option value="Intake">Intake</option>
+                            <option value="Evidence">Evidence</option>
+                            <option value="Submitted">Submitted</option>
+                            <option value="Review">Review</option>
+                            <option value="Paid">Paid</option>
+                          </select>
+                          <Button
+                            size="sm"
+                            onClick={() => handleBulkStatusUpdate(bulkStatusToApply)}
+                            className="h-8 px-3 bg-orange-500 hover:bg-orange-600 text-black font-semibold font-mono text-xs rounded cursor-pointer"
+                          >
+                            Apply Bulk Status
+                          </Button>
+                        </div>
+
+                        {/* Bulk Delete */}
+                        <Dialog open={bulkDeleteConfirmOpen} onOpenChange={setBulkDeleteConfirmOpen}>
+                          <DialogTrigger
+                            onClick={() => setBulkDeleteConfirmOpen(true)}
+                            className="h-10 px-3 border border-red-500/40 bg-red-950/30 hover:bg-red-900/50 text-red-400 font-mono text-xs flex items-center gap-1.5 rounded-lg cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Bulk Delete ({selectedCaseIds.length})
+                          </DialogTrigger>
+                          <DialogContent className="bg-neutral-950 border-neutral-850 text-neutral-200 max-w-md">
+                            <DialogHeader>
+                              <DialogTitle className="text-red-400 font-mono flex items-center gap-2">
+                                <AlertTriangle className="w-5 h-5 text-red-500" />
+                                Confirm Bulk Folder Deletion
+                              </DialogTitle>
+                              <DialogDescription className="text-neutral-400 text-xs mt-2 leading-relaxed">
+                                Are you sure you want to permanently remove <strong className="text-neutral-100">{selectedCaseIds.length}</strong> selected saved lead folders totaling <strong className="text-emerald-400">${selectedTotalValue.toLocaleString()}</strong> in claim value? This action cannot be undone.
+                              </DialogDescription>
+                            </DialogHeader>
+                            <DialogFooter className="mt-4 flex gap-2 justify-end">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setBulkDeleteConfirmOpen(false)}
+                                className="border-neutral-800 text-neutral-300 font-mono text-xs cursor-pointer"
+                              >
+                                Cancel
+                              </Button>
+
+                              <Button
+                                size="sm"
+                                onClick={handleBulkDelete}
+                                className="bg-red-600 hover:bg-red-700 text-white font-mono text-xs cursor-pointer"
+                              >
+                                Permanently Delete ({selectedCaseIds.length})
+                              </Button>
+                            </DialogFooter>
+                          </DialogContent>
+                        </Dialog>
+
+                        {/* Clear Selection */}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setSelectedCaseIds([])}
+                          className="h-10 px-2.5 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900 font-mono text-xs flex items-center gap-1 rounded-lg cursor-pointer"
+                          title="Clear Selection"
+                        >
+                          <X className="w-4 h-4" />
+                          <span className="hidden sm:inline">Clear</span>
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {bulkActionNotification && (
+                  <div className="fixed top-20 right-6 z-50 bg-neutral-950 border border-emerald-500/50 text-emerald-300 text-xs font-mono px-4 py-3 rounded-xl shadow-[0_0_25px_rgba(16,185,129,0.25)] flex items-center gap-2.5 animate-in fade-in slide-in-from-top-3">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>{bulkActionNotification}</span>
+                  </div>
+                )}
              </div>
              );
           })()}
@@ -1722,6 +1952,14 @@ export default function App() {
             <OutreachAndDataTools 
               toolType="campaigns" 
               savedCases={savedCases} 
+            />
+          )}
+
+          {/* 8) SPECIALIZED 12-FIELD ASSET SEARCH page */}
+          {activeTab === "specialized_search" && (
+            <SpecializedAssetSearch
+              onSaveCase={handleSaveConsolidatedCase}
+              onNavigateToTab={(tab) => setActiveTab(tab as any)}
             />
           )}
 
