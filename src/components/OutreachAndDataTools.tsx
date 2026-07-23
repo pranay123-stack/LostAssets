@@ -73,7 +73,7 @@ export function OutreachAndDataTools({ toolType, savedCases = [], onImportRecord
   const [sqliteRecords, setSqliteRecords] = useState<any[]>([]);
   const [isLoadingRecords, setIsLoadingRecords] = useState(false);
 
-  // --- ZIP DRAG-AND-DROP STATE ---
+  // --- ZIP & CSV DRAG-AND-DROP STATE ---
   const [importTab, setImportTab] = useState<"zip" | "pasted">("zip");
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -101,11 +101,14 @@ export function OutreachAndDataTools({ toolType, savedCases = [], onImportRecord
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
       const file = files[0];
-      if (!file.name.toLowerCase().endsWith(".zip")) {
-        setUploadError("Invalid file type. Please upload a valid zipped (.zip) file.");
-        return;
+      const ext = file.name.toLowerCase();
+      if (ext.endsWith(".csv")) {
+        await uploadCsvFile(file);
+      } else if (ext.endsWith(".zip")) {
+        await uploadZipFile(file);
+      } else {
+        setUploadError("Invalid file type. Please upload a valid CSV (.csv) or ZIP (.zip) file.");
       }
-      await uploadZipFile(file);
     }
   };
 
@@ -113,11 +116,51 @@ export function OutreachAndDataTools({ toolType, savedCases = [], onImportRecord
     const files = e.target.files;
     if (files && files.length > 0) {
       const file = files[0];
-      if (!file.name.toLowerCase().endsWith(".zip")) {
-        setUploadError("Invalid file type. Please upload a valid zipped (.zip) file.");
-        return;
+      const ext = file.name.toLowerCase();
+      if (ext.endsWith(".csv")) {
+        await uploadCsvFile(file);
+      } else if (ext.endsWith(".zip")) {
+        await uploadZipFile(file);
+      } else {
+        setUploadError("Invalid file type. Please upload a valid CSV (.csv) or ZIP (.zip) file.");
       }
-      await uploadZipFile(file);
+    }
+  };
+
+  const uploadCsvFile = async (file: File) => {
+    setIsUploading(true);
+    setUploadError(null);
+    setUploadResult(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const response = await fetch("/api/upload-csv", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({ error: "Server sync failed" }));
+        throw new Error(errData.error || `Upload failed with status ${response.status}`);
+      }
+
+      const result = await response.json();
+      setUploadResult({
+        success: true,
+        totalFilesProcessed: 1,
+        fileNames: [result.fileName],
+        recordsParsed: result.recordsParsed,
+        recordsInserted: result.recordsInserted,
+        duplicateCount: result.duplicateCount
+      });
+      fetchRecordsFromSQLite();
+    } catch (err: any) {
+      console.error("CSV Upload error:", err);
+      setUploadError(err.message || "Failed to process and sync uploaded CSV onto local SQLite.");
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -1051,7 +1094,7 @@ Pineda Family Trust, 84300, FL, Life Insurance, Prudential`;
                   importTab === "zip" ? "bg-orange-500 text-black font-semibold shadow-md" : "text-neutral-400 hover:text-neutral-200"
                 )}
               >
-                SQLite ZIP Sync (Drag & Drop)
+                SQLite ZIP / CSV Sync
               </button>
               <button
                 type="button"
@@ -1068,7 +1111,7 @@ Pineda Family Trust, 84300, FL, Life Insurance, Prudential`;
 
           {importTab === "zip" ? (
             <div className="space-y-6">
-              {/* ZIP upload drag zone */}
+              {/* ZIP/CSV upload drag zone */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                 <div className="lg:col-span-7 space-y-4">
                   <Card className="border-neutral-850 bg-[#0e0e11] p-6 space-y-5">
@@ -1093,7 +1136,7 @@ Pineda Family Trust, 84300, FL, Life Insurance, Prudential`;
                     >
                       <input 
                         type="file" 
-                        accept=".zip" 
+                        accept=".zip,.csv" 
                         onChange={handleFileSelect}
                         disabled={isUploading}
                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
@@ -1104,7 +1147,7 @@ Pineda Family Trust, 84300, FL, Life Insurance, Prudential`;
                         <div className="space-y-4 animate-pulse">
                           <Loader2 className="w-12 h-12 text-orange-500 mx-auto animate-spin" />
                           <div>
-                            <p className="text-sm font-semibold text-neutral-200 font-mono">EXTRACTING & UPLOADING ZIP ARCHIVE...</p>
+                            <p className="text-sm font-semibold text-neutral-200 font-mono">EXTRACTING & SYNCHRONIZING FILE TO SQLITE...</p>
                             <p className="text-xs text-neutral-500 mt-1">Sieving data schemas and validating database constraints</p>
                           </div>
                         </div>
@@ -1114,11 +1157,11 @@ Pineda Family Trust, 84300, FL, Life Insurance, Prudential`;
                             <Upload className="w-5 h-5" />
                           </div>
                           <div>
-                            <p className="text-sm font-semibold text-neutral-200">Drag and drop your ZIP archive here</p>
+                            <p className="text-sm font-semibold text-neutral-200">Drag & drop your ZIP archive or CSV file here</p>
                             <p className="text-xs text-neutral-500 mt-1">or click this workspace box to select from system file tree</p>
                           </div>
                           <p className="text-[10px] text-neutral-600 font-mono max-w-sm mx-auto leading-relaxed">
-                            Compress .csv and .json data sheets together. Duplicate entries are cross-referenced with SQLite state_id / checksum tables and discarded automatically.
+                            Directly upload individual .csv sheets or compressed .zip files containing .csv/.json lists. Duplicate records are cross-referenced with SQLite state_id / checksum tables and discarded automatically.
                           </p>
                         </div>
                       )}

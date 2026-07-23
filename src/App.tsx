@@ -447,12 +447,14 @@ export default function App() {
         
         {/* Sidebar Header Title lockup */}
         <div className="p-5 border-b border-neutral-900 flex items-center space-x-3 bg-neutral-950/40">
-          <div className="bg-orange-500/15 p-2 rounded-lg border border-orange-500/30">
-            <Award className="w-5 h-5 text-orange-400 animate-pulse" />
+          <div className="bg-indigo-500/15 p-2 rounded-lg border border-indigo-500/30">
+            <Award className="w-5 h-5 text-indigo-400 animate-pulse" />
           </div>
           <div>
-            <div className="text-sm font-bold tracking-wider text-neutral-100 font-sans">SOVEREIGN ASSET</div>
-            <div className="text-[9px] uppercase tracking-widest text-neutral-400 font-bold font-mono">RECOVERY AGENCY</div>
+            <div className="text-sm font-bold tracking-wider text-neutral-100 font-sans flex items-center gap-1">
+              <span>RECLAIM</span><span className="text-indigo-400">IQ</span>
+            </div>
+            <div className="text-[9px] uppercase tracking-widest text-neutral-400 font-bold font-mono">ASSET INTELLIGENCE</div>
           </div>
         </div>
 
@@ -666,7 +668,7 @@ export default function App() {
       <header className="md:hidden flex items-center justify-between h-14 px-4 border-b border-neutral-900 bg-[#09090b] sticky top-0 z-30">
         <div className="flex items-center space-x-2">
           <Award className="w-5 h-5 text-orange-450" />
-          <span className="text-xs font-bold tracking-wider">SOVEREIGN RECOVERY</span>
+          <span className="text-xs font-bold tracking-wider flex items-center gap-0.5"><span>RECLAIM</span><span className="text-orange-400">IQ</span></span>
         </div>
         
         <Button 

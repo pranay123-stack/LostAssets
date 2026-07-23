@@ -248,6 +248,130 @@ app.post("/api/upload-zip", upload.single("file"), (req, res) => {
   }
 });
 
+// Post single CSV data, parse, deduplicate and save to SQLite
+app.post("/api/upload-csv", upload.single("file"), (req, res) => {
+  console.log("CSV Upload API hit. File details:", req.file ? { name: req.file.originalname, size: req.file.size } : "No file");
+  if (!req.file) {
+    return res.status(400).json({ error: "No CSV file uploaded." });
+  }
+
+  try {
+    const content = req.file.buffer.toString("utf8");
+    const entries = parseCSVContent(content);
+    let recordsParsed = 0;
+    const toBeInserted: any[] = [];
+
+    for (const raw of entries) {
+      recordsParsed++;
+
+      const state_id = String(raw.state_id || raw.stateId || raw["State ID"] || raw["Record ID"] || raw["stateId"] || "").trim();
+      const first_name = String(raw.first_name || raw.firstName || raw["First Name"] || raw["Owner First Name"] || "").trim();
+      const last_name = String(raw.last_name || raw.lastName || raw["Last Name"] || raw["Owner Last Name"] || "").trim();
+      const fullName = String(raw.name || raw.owner || raw["Name"] || raw["Owner Name"] || "").trim();
+
+      let finalFirstName = first_name;
+      let finalLastName = last_name;
+
+      if (fullName && !finalFirstName && !finalLastName) {
+        const parts = fullName.split(/\s+/);
+        if (parts.length > 0) {
+          finalFirstName = parts[0];
+          finalLastName = parts.slice(1).join(" ");
+        }
+      }
+
+      const state = String(raw.state || raw["State"] || raw["Origin State"] || "CA").trim().toUpperCase();
+      const property_type = String(raw.property_type || raw.propertyType || raw.type || raw["Property Type"] || raw["Asset Type"] || "Uncashed Check").trim();
+      
+      const rawAmt = raw.amount || raw["Amount"] || raw["Escheated Amount"] || "0";
+      let cleanAmtStr = String(rawAmt).trim().replace(/[\$,]/g, "");
+      const amount = parseFloat(cleanAmtStr);
+
+      const company = String(raw.company || raw.holder || raw.holderCompany || raw["Custodian"] || raw["Company"] || "Unknown").trim();
+      const location = String(raw.location || raw.address || raw["Location"] || raw["Address"] || "").trim();
+
+      if (isNaN(amount) || (!finalFirstName && !finalLastName && !fullName)) {
+        continue;
+      }
+
+      toBeInserted.push({
+        finalFirstName,
+        finalLastName,
+        state,
+        property_type,
+        amount,
+        company,
+        location,
+        state_id
+      });
+    }
+
+    const stmtCheckStateId = db.prepare("SELECT COUNT(*) as count FROM scraped_records WHERE state_id = ?");
+    const stmtCheckCombo = db.prepare(`
+      SELECT COUNT(*) as count FROM scraped_records 
+      WHERE first_name = ? AND last_name = ? AND state = ? AND company = ? AND ABS(amount - ?) < 0.01
+    `);
+    const stmtInsertRecord = db.prepare(`
+      INSERT INTO scraped_records (first_name, last_name, state, property_type, amount, company, location, state_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const executeInsertTransaction = db.transaction((records: any[]) => {
+      let recordsInserted = 0;
+      let duplicateCount = 0;
+
+      for (const rec of records) {
+        let isDuplicate = false;
+
+        if (rec.state_id) {
+          const countObj = stmtCheckStateId.get(rec.state_id) as { count: number };
+          if (countObj && countObj.count > 0) {
+            isDuplicate = true;
+          }
+        } else {
+          const countObj = stmtCheckCombo.get(rec.finalFirstName, rec.finalLastName, rec.state, rec.company, rec.amount) as { count: number };
+          if (countObj && countObj.count > 0) {
+            isDuplicate = true;
+          }
+        }
+
+        if (isDuplicate) {
+          duplicateCount++;
+          continue;
+        }
+
+        stmtInsertRecord.run(
+          rec.finalFirstName,
+          rec.finalLastName,
+          rec.state,
+          rec.property_type,
+          rec.amount,
+          rec.company,
+          rec.location,
+          rec.state_id || null
+        );
+        recordsInserted++;
+      }
+
+      return { recordsInserted, duplicateCount };
+    });
+
+    const { recordsInserted, duplicateCount } = executeInsertTransaction(toBeInserted);
+
+    res.json({
+      success: true,
+      fileName: req.file.originalname,
+      recordsParsed,
+      recordsInserted,
+      duplicateCount
+    });
+
+  } catch (err: any) {
+    console.error("CSV processing failed:", err);
+    res.status(500).json({ error: "Failed to process uploaded CSV", message: err.message });
+  }
+});
+
 // State rule mock scraper
 app.get("/api/scrape", async (req, res) => {
   const { firstName, lastName, state, highValue } = req.query;

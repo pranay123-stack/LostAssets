@@ -3,6 +3,7 @@ import {
   User, CheckCircle2, FileText, Mail, Phone, Calendar, ShieldCheck, 
   MapPin, Clock, Award, CheckCircle, AlertTriangle, AlertCircle 
 } from "lucide-react";
+import { AssetRadarWidget } from "./AssetRadarWidget";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
@@ -122,7 +123,7 @@ export function ClientIntake({ onWorkflowComplete }: ClientIntakeProps) {
           </span>
           <h2 className="text-3xl font-bold tracking-tight text-neutral-100 mt-2">Asset Recovery Dashboard</h2>
           <p className="text-neutral-450 text-sm mt-1">
-            Capture claimant identity, asset details, and a signed authorization for Lost Assets to pursue recovery and collect the agreed finder's fee.
+            Capture claimant identity, asset details, and a signed authorization for ReclaimIQ to pursue recovery and collect the agreed finder's fee.
           </p>
         </div>
 
@@ -147,6 +148,9 @@ export function ClientIntake({ onWorkflowComplete }: ClientIntakeProps) {
           </div>
         </div>
       </div>
+
+      {/* High-Tech Premium Asset Scanning Radar Block */}
+      <AssetRadarWidget />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Side: Form Information & Details (8 columns on lg) */}
@@ -351,9 +355,9 @@ export function ClientIntake({ onWorkflowComplete }: ClientIntakeProps) {
             <CardContent className="p-5 space-y-4">
               <div className="text-xs text-neutral-400 leading-normal bg-neutral-950 border border-neutral-850 p-3 rounded-lg max-h-48 overflow-y-auto font-sans leading-relaxed">
                 <p className="font-semibold text-[11px] text-orange-400 uppercase tracking-wider mb-1.5">Finder's Fee Agreement</p>
-                I authorize Lost Assets to research, prepare, and submit recovery materials for the unclaimed asset property identified as mine in this custom package.
+                I authorize ReclaimIQ to research, prepare, and submit recovery materials for the unclaimed asset property identified as mine in this custom package.
                 <br /><br />
-                If funds are successfully recovered from California State Controller, I agree Lost Assets is entitled to a finder's fee of <strong className="text-neutral-100">10%</strong> of the recovered amount, payable from proceeds or by invoice immediately upon disbursement as allowed by California administrative state code.
+                If funds are successfully recovered from California State Controller, I agree ReclaimIQ is entitled to a finder's fee of <strong className="text-neutral-100">10%</strong> of the recovered amount, payable from proceeds or by invoice immediately upon disbursement as allowed by California administrative state code.
                 <br /><br />
                 I confirm that I have authority to sign for <span className="font-semibold text-neutral-200 font-mono text-[11px] bg-neutral-900 px-1 rounded">{firstName || "Claimant"} {lastName}</span> and that the system information provided is complete, authentic, and accurate.
               </div>
