@@ -114,6 +114,7 @@ export default function App() {
   const [saveCategoryName, setSaveCategoryName] = useState("");
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [dbStateFilter, setDbStateFilter] = useState("");
+  const [dbStatusFilter, setDbStatusFilter] = useState<string>("all");
   
   // Bulk selection state for saved cases
   const [selectedCaseIds, setSelectedCaseIds] = useState<string[]>([]);
@@ -1329,7 +1330,12 @@ export default function App() {
 
           {/* 3) SAVED CASES PAGE */}
           {activeTab === "saved_cases" && (() => {
-             const filteredCases = savedCases.filter(c => dbStateFilter === "" || c.assets.some(a => a.state === dbStateFilter));
+             const filteredCases = savedCases.filter(c => {
+                const matchesState = dbStateFilter === "" || c.assets.some(a => a.state === dbStateFilter);
+                const status = c.status || "Lead";
+                const matchesStatus = dbStatusFilter === "all" || status === dbStatusFilter;
+                return matchesState && matchesStatus;
+             });
              
              // Compute total recoverable assets by state
              const chartDataMap: Record<string, number> = {};
@@ -1389,8 +1395,46 @@ export default function App() {
                         ))}
                      </select>
                      <Badge className="bg-neutral-900 text-neutral-400 border border-neutral-850 font-mono">{filteredCases.length} Total</Badge>
-                  </div>
-               </div>
+                   </div>
+                </div>
+
+                {/* STATUS BADGE FILTER PILLS BAR */}
+                <div className="flex flex-wrap items-center gap-2 p-3 bg-neutral-950/80 rounded-xl border border-neutral-900 shadow-inner">
+                   <span className="text-[10px] font-mono text-neutral-450 uppercase tracking-wider mr-1">Status Filter:</span>
+                   {[
+                      { id: "all", label: "All Stages", color: "bg-neutral-800 text-neutral-200 border-neutral-700" },
+                      { id: "Lead", label: "Lead", color: "bg-red-500/20 text-red-300 border-red-500/40", dot: "bg-red-500" },
+                      { id: "Intake", label: "Intake", color: "bg-purple-500/20 text-purple-300 border-purple-500/40", dot: "bg-purple-400" },
+                      { id: "Evidence", label: "Evidence", color: "bg-amber-500/20 text-amber-300 border-amber-500/40", dot: "bg-amber-400" },
+                      { id: "Submitted", label: "Submitted", color: "bg-blue-500/20 text-blue-300 border-blue-500/40", dot: "bg-blue-400" },
+                      { id: "Review", label: "Review", color: "bg-orange-500/20 text-orange-300 border-orange-500/40", dot: "bg-orange-400" },
+                      { id: "Paid", label: "Paid", color: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40", dot: "bg-emerald-400" }
+                   ].map((st) => {
+                      const count = st.id === "all" 
+                         ? savedCases.filter(c => dbStateFilter === "" || c.assets.some(a => a.state === dbStateFilter)).length
+                         : savedCases.filter(c => (dbStateFilter === "" || c.assets.some(a => a.state === dbStateFilter)) && (c.status || "Lead") === st.id).length;
+                      const isActive = dbStatusFilter === st.id;
+                      return (
+                         <button
+                            key={st.id}
+                            type="button"
+                            onClick={() => setDbStatusFilter(st.id)}
+                            className={cn(
+                               "px-2.5 py-1 rounded-lg text-[11px] font-mono font-semibold border transition-all flex items-center gap-1.5 cursor-pointer",
+                               isActive
+                                  ? `${st.color} ring-1 ring-white/20 scale-102 font-bold shadow-sm`
+                                  : "bg-neutral-900/60 border-neutral-850 text-neutral-450 hover:text-neutral-200 hover:bg-neutral-850"
+                            )}
+                         >
+                            {st.dot && <span className={cn("w-1.5 h-1.5 rounded-full animate-pulse", st.dot)} />}
+                            <span>{st.label}</span>
+                            <span className="text-[9px] px-1.5 py-0.2 bg-neutral-950 rounded border border-neutral-800 text-neutral-300 font-mono font-bold">
+                               {count}
+                            </span>
+                         </button>
+                      );
+                   })}
+                </div>
 
                {/* RECHARTS DATA VISUALIZATION SECTION */}
                {filteredCases.length > 0 && chartData.length > 0 && (
@@ -1518,7 +1562,8 @@ export default function App() {
                                       <div className="flex items-center gap-2">
                                         <CardTitle className="text-sm font-semibold text-orange-400 font-mono">{savedCase.categoryName}</CardTitle>
                                         {savedCase.status && (
-                                          <Badge variant="outline" className="text-[10px] font-mono border-neutral-800 bg-neutral-900 text-neutral-300">
+                                          <Badge variant="outline" className={cn("text-[10px] font-mono border font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1.5", savedCase.status === "Lead" && "bg-red-500/15 text-red-400 border-red-500/40 shadow-[0_0_8px_rgba(239,68,68,0.2)]", savedCase.status === "Paid" && "bg-emerald-500/15 text-emerald-400 border-emerald-500/40 shadow-[0_0_8px_rgba(16,185,129,0.2)]", savedCase.status === "Submitted" && "bg-blue-500/15 text-blue-400 border-blue-500/40 shadow-[0_0_8px_rgba(59,130,246,0.2)]", savedCase.status === "Evidence" && "bg-amber-500/15 text-amber-300 border-amber-500/40", savedCase.status === "Intake" && "bg-purple-500/15 text-purple-300 border-purple-500/40", savedCase.status === "Review" && "bg-orange-500/15 text-orange-400 border-orange-500/40")}>
+                                             <span className={cn("w-1.5 h-1.5 rounded-full animate-pulse", savedCase.status === "Lead" && "bg-red-500", savedCase.status === "Paid" && "bg-emerald-400", savedCase.status === "Submitted" && "bg-blue-400", savedCase.status === "Evidence" && "bg-amber-400", savedCase.status === "Intake" && "bg-purple-400", savedCase.status === "Review" && "bg-orange-400")} />
                                             {savedCase.status}
                                           </Badge>
                                         )}

@@ -1,13 +1,15 @@
 import { useState, useRef, useEffect } from "react";
-import { Terminal, Radar, Search, ShieldAlert, Cpu, Crosshair, Users, MapPin, Phone, Building } from "lucide-react";
+import { Terminal, Radar, Search, ShieldAlert, Cpu, Crosshair, Users, MapPin, Phone, Building, Network, Sparkles } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Badge } from "./ui/badge";
+import { HeirTreeVisualizer } from "./HeirTreeVisualizer";
 
 export function TraceConsole() {
   const [target, setTarget] = useState("");
-  const [traceType, setTraceType] = useState<"username" | "person">("username");
+  const [traceType, setTraceType] = useState<"username" | "person">("person");
+  const [viewTab, setViewTab] = useState<"d3_tree" | "terminal">("d3_tree");
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<{msg: string; type: "info" | "success" | "error" | "warning"}[]>([]);
   const [results, setResults] = useState<any[]>([]);
@@ -188,47 +190,89 @@ export function TraceConsole() {
           )}
         </div>
 
-        {/* Terminal Output */}
-        <div className="w-full md:w-2/3 bg-[#0c0c0c] border border-neutral-800 rounded-xl overflow-hidden font-mono text-sm leading-relaxed flex flex-col h-[600px] shadow-2xl">
-          <div className="bg-[#1a1a1a] flex border-b border-neutral-800 px-4 py-2 items-center justify-between">
-              <div className="flex space-x-2">
-                 <div className="w-3 h-3 rounded-full bg-rose-500/80"></div>
-                 <div className="w-3 h-3 rounded-full bg-amber-500/80"></div>
-                 <div className="w-3 h-3 rounded-full bg-emerald-500/80"></div>
-              </div>
-              <div className="text-xs text-neutral-500 font-medium tracking-widest uppercase flex items-center">
-                 <Terminal className="w-3 h-3 mr-2" />
-                 OSINT TTY1
-              </div>
-              <div className="w-16"></div>
+        {/* Right Output Panel - Tabbed between D3 Tree & Terminal */}
+        <div className="w-full md:w-2/3 space-y-4">
+          <div className="flex items-center justify-between bg-neutral-900/60 p-1.5 rounded-xl border border-neutral-800">
+            <div className="flex space-x-2">
+              <button
+                onClick={() => setViewTab("d3_tree")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                  viewTab === "d3_tree"
+                    ? "bg-orange-500/20 text-orange-300 border border-orange-500/40 shadow-sm"
+                    : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+                }`}
+              >
+                <Network className="w-3.5 h-3.5 text-orange-400" />
+                D3 Heir Connections Tree
+              </button>
+
+              <button
+                onClick={() => setViewTab("terminal")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                  viewTab === "terminal"
+                    ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shadow-sm"
+                    : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+                }`}
+              >
+                <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+                OSINT Terminal Logs
+              </button>
+            </div>
+
+            <span className="text-[10px] font-mono text-neutral-500 hidden sm:inline-block pr-2">
+              {viewTab === "d3_tree" ? "D3 Hierarchy Engine v7" : "TTY OSINT Console v1.0"}
+            </span>
           </div>
-          <div ref={scrollRef} className="flex-1 p-6 overflow-y-auto space-y-1">
-             <div className="text-neutral-600 mb-4">
-               {`__  __       _                  _ 
+
+          {viewTab === "d3_tree" ? (
+            <HeirTreeVisualizer targetName={target} relativesData={results} />
+          ) : (
+            <div className="bg-[#0c0c0c] border border-neutral-800 rounded-xl overflow-hidden font-mono text-sm leading-relaxed flex flex-col h-[540px] shadow-2xl">
+              <div className="bg-[#1a1a1a] flex border-b border-neutral-800 px-4 py-2 items-center justify-between">
+                <div className="flex space-x-2">
+                  <div className="w-3 h-3 rounded-full bg-rose-500/80"></div>
+                  <div className="w-3 h-3 rounded-full bg-amber-500/80"></div>
+                  <div className="w-3 h-3 rounded-full bg-emerald-500/80"></div>
+                </div>
+                <div className="text-xs text-neutral-500 font-medium tracking-widest uppercase flex items-center">
+                  <Terminal className="w-3 h-3 mr-2" />
+                  OSINT TTY1
+                </div>
+                <div className="w-16"></div>
+              </div>
+              <div ref={scrollRef} className="flex-1 p-6 overflow-y-auto space-y-1">
+                <div className="text-neutral-600 mb-4">
+                  {`__  __       _                  _ 
 |  \\/  |     (_)                | |
 | \\  / | __ _ _ _ __ _ __ ___  | |_
 | |\\/| |/ _\` | | '__| '__/ _ \\ | __|
 | |  | | (_| | | |  | | |  __/ | |_
 |_|  |_|\\__,_|_|_|  |_|  \\___|  \\__|
 OSINT Tool / Trace Database v1.0`}
-             </div>
-             {logs.length === 0 && (
-                <div className="text-neutral-500">System idle. Ready for intelligence gathering...</div>
-             )}
-             {logs.map((log, i) => (
-                <div key={i} className={
-                    log.type === "success" ? "text-emerald-400" :
-                    log.type === "error" ? "text-rose-400" :
-                    log.type === "warning" ? "text-amber-400" :
-                    "text-neutral-300"
-                }>
-                   {log.msg}
                 </div>
-             ))}
-             {isRunning && (
-                <div className="text-neutral-500 animate-pulse mt-2">_</div>
-             )}
-          </div>
+                {logs.length === 0 && (
+                  <div className="text-neutral-500">System idle. Ready for intelligence gathering...</div>
+                )}
+                {logs.map((log, i) => (
+                  <div
+                    key={i}
+                    className={
+                      log.type === "success"
+                        ? "text-emerald-400"
+                        : log.type === "error"
+                        ? "text-rose-400"
+                        : log.type === "warning"
+                        ? "text-amber-400"
+                        : "text-neutral-300"
+                    }
+                  >
+                    {log.msg}
+                  </div>
+                ))}
+                {isRunning && <div className="text-neutral-500 animate-pulse mt-2">_</div>}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

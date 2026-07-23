@@ -11,6 +11,7 @@ import { Badge } from "./ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { STATE_RULES, StateRule } from "../services/stateRulesService";
 import { SavedCase } from "../types";
+import { cn } from "../lib/utils";
 
 interface LeadHistoryModalProps {
   savedCase: SavedCase;
@@ -160,6 +161,29 @@ export function LeadHistoryModal({ savedCase, onUpdateCase }: LeadHistoryModalPr
       <div className="bg-gradient-to-r from-orange-500/10 via-neutral-900 to-neutral-900 p-6 border-b border-neutral-850">
         <DialogHeader className="space-y-1">
           <div className="flex flex-wrap items-center gap-2 mb-1.5">
+            <Badge 
+              variant="outline" 
+              className={cn(
+                "text-[10px] font-mono border font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1.5",
+                (savedCase.status || "Lead") === "Lead" && "bg-red-500/15 text-red-400 border-red-500/40 shadow-[0_0_8px_rgba(239,68,68,0.2)]",
+                savedCase.status === "Paid" && "bg-emerald-500/15 text-emerald-400 border-emerald-500/40 shadow-[0_0_8px_rgba(16,185,129,0.2)]",
+                savedCase.status === "Submitted" && "bg-blue-500/15 text-blue-400 border-blue-500/40 shadow-[0_0_8px_rgba(59,130,246,0.2)]",
+                savedCase.status === "Evidence" && "bg-amber-500/15 text-amber-300 border-amber-500/40",
+                savedCase.status === "Intake" && "bg-purple-500/15 text-purple-300 border-purple-500/40",
+                savedCase.status === "Review" && "bg-orange-500/15 text-orange-400 border-orange-500/40"
+              )}
+            >
+              <span className={cn(
+                "w-1.5 h-1.5 rounded-full animate-pulse",
+                (savedCase.status || "Lead") === "Lead" && "bg-red-500",
+                savedCase.status === "Paid" && "bg-emerald-400",
+                savedCase.status === "Submitted" && "bg-blue-400",
+                savedCase.status === "Evidence" && "bg-amber-400",
+                savedCase.status === "Intake" && "bg-purple-400",
+                savedCase.status === "Review" && "bg-orange-400"
+              )} />
+              Stage: {savedCase.status || "Lead"}
+            </Badge>
             <Badge variant="outline" className="border-orange-500/20 text-orange-400 bg-orange-500/5 font-mono text-[10px]">
               Active Case Vault
             </Badge>
