@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { ASSET_CATEGORIES_DATA } from "./SpecializedAssetSearch";
 import { insertBatchToBrowserDb, AssetRecord } from "../lib/db";
 import JSZip from "jszip";
+import { HermesTerminal } from "./HermesTerminal";
 
 // Full multi-state registers
 const REGISTRY_STATISTICS = [
@@ -1217,6 +1218,16 @@ Silverado Inc, 142000.00, CA, Corporate Escrow Credit, Chevron Corp, 1`);
                   </div>
                 </CardContent>
               </Card>
+            </div>
+          </div>
+          
+          <div className="pt-6 border-t border-neutral-800">
+            <div>
+              <h2 className="text-xl font-bold tracking-tight text-neutral-100 mt-2">Hermes Control Terminal</h2>
+              <p className="text-neutral-400 text-sm mb-4">Direct WebSocket CLI connection to the backend Hermes Agent.</p>
+            </div>
+            <div className="h-[500px]">
+              <HermesTerminal />
             </div>
           </div>
         </div>

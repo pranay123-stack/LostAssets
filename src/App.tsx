@@ -30,6 +30,7 @@ import { LeadHistoryModal } from "./components/LeadHistoryModal";
 import { PrintCaseModal } from "./components/PrintCaseModal";
 import { SpecializedAssetSearch } from "./components/SpecializedAssetSearch";
 import { LostAssetsIQLogo } from "./components/LostAssetsIQLogo";
+import { DatabaseExplorer } from "./components/DatabaseExplorer";
 
 import { AssetRecord, Relative, SavedCase, SearchQuery, RecentSearch } from "./types";
 import { searchLostAssets, trackRelatives, AVAILABLE_STATES, ASSET_TYPES } from "./services/mockDataService";
@@ -64,7 +65,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<
     "client_intake" | "search_workbench" | "saved_cases" | "specialized_search" | "ca_bundling" | 
     "asset_combiner" | "ca_investigator_hub" | "campaigns" | "trace_osint" | 
-    "multistate_search" | "hermes" | "asset_db" | "regulations" | "import_csv"
+    "multistate_search" | "hermes" | "asset_db" | "regulations" | "import_csv" | "database_explorer"
   >("client_intake");
 
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
@@ -721,6 +722,19 @@ export default function App() {
             >
               <Upload className={cn("w-4 h-4", activeTab === "import_csv" ? "text-orange-500" : "text-neutral-500")} />
               <span>IMPORT CSV</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab("database_explorer")}
+              className={cn(
+                "w-full flex items-center space-x-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all text-left",
+                activeTab === "database_explorer" 
+                  ? "bg-orange-500/10 text-orange-400 border border-orange-500/20 shadow-sm" 
+                  : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/40"
+              )}
+            >
+              <Database className={cn("w-4 h-4", activeTab === "database_explorer" ? "text-orange-500" : "text-neutral-500")} />
+              <span>DATABASE EXPLORER</span>
             </button>
           </div>
         </div>
@@ -2089,6 +2103,13 @@ export default function App() {
                 setActiveTab("search_workbench");
               }} 
             />
+          )}
+
+          {/* 14) Database Explorer */}
+          {activeTab === "database_explorer" && (
+            <div className="p-6">
+              <DatabaseExplorer />
+            </div>
           )}
 
         </div>

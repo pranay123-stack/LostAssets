@@ -1,5 +1,7 @@
 import express from "express";
 import path from "path";
+import http from "http";
+import { WebSocketServer } from "ws";
 import Database from "better-sqlite3";
 import cors from "cors";
 import axios from "axios";
@@ -8,6 +10,7 @@ import { createServer as createViteServer } from "vite";
 import multer from "multer";
 import AdmZip from "adm-zip";
 import { GoogleGenAI } from "@google/genai";
+import { HermesAgentHandler } from "./server/hermes-agent";
 
 const app = express();
 const PORT = 3000;
@@ -1337,6 +1340,26 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 });
 
 async function startServer() {
+  const server = http.createServer(app);
+  
+  // Set up WebSocket server for Hermes terminal
+  const wss = new WebSocketServer({ noServer: true });
+  const hermesAgent = new HermesAgentHandler(db);
+  
+  server.on('upgrade', (request, socket, head) => {
+    if (request.url === '/ws/hermes') {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
+
+  wss.on('connection', (ws) => {
+    hermesAgent.handleConnection(ws);
+  });
+
   if (process.env.NODE_ENV !== "production") {
     // Vite middleware for development
     const vite = await createViteServer({
@@ -1353,7 +1376,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 }
