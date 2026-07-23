@@ -6,9 +6,11 @@ export interface StateRule {
   documentationRequired: string[];
   timeline: string;
   maxCommission: string;
+  probateAdvanceStatus?: string;
+  probateAdvanceNotes?: string;
 }
 
-export const STATE_RULES: Record<string, StateRule> = {
+const STATE_RULE_OVERRIDES: Record<string, StateRule> = {
   CA: {
     state: "CA",
     name: "California State Controller's Office",
@@ -135,13 +137,28 @@ export const STATE_RULES: Record<string, StateRule> = {
     timeline: "Can take 90-120 days due to high volume.",
     maxCommission: "15%",
   },
-  NQ: {
-    state: "NQ",
-    name: "NQ Special District",
-    website: "#",
-    claimProcess: "Special handling requested for NQ claims. Submit directly through the NQ portal.",
-    documentationRequired: ["Standard Identification", "Special NQ verification slip"],
-    timeline: "Varies depending on NQ batch processing schedules.",
-    maxCommission: "10%",
-  }
 };
+
+const ALL_STATES: Array<[string, string]> = [
+  ["AL", "Alabama"], ["AK", "Alaska"], ["AZ", "Arizona"], ["AR", "Arkansas"], ["CA", "California"], ["CO", "Colorado"], ["CT", "Connecticut"], ["DE", "Delaware"], ["FL", "Florida"], ["GA", "Georgia"],
+  ["HI", "Hawaii"], ["ID", "Idaho"], ["IL", "Illinois"], ["IN", "Indiana"], ["IA", "Iowa"], ["KS", "Kansas"], ["KY", "Kentucky"], ["LA", "Louisiana"], ["ME", "Maine"], ["MD", "Maryland"],
+  ["MA", "Massachusetts"], ["MI", "Michigan"], ["MN", "Minnesota"], ["MS", "Mississippi"], ["MO", "Missouri"], ["MT", "Montana"], ["NE", "Nebraska"], ["NV", "Nevada"], ["NH", "New Hampshire"], ["NJ", "New Jersey"],
+  ["NM", "New Mexico"], ["NY", "New York"], ["NC", "North Carolina"], ["ND", "North Dakota"], ["OH", "Ohio"], ["OK", "Oklahoma"], ["OR", "Oregon"], ["PA", "Pennsylvania"], ["RI", "Rhode Island"], ["SC", "South Carolina"],
+  ["SD", "South Dakota"], ["TN", "Tennessee"], ["TX", "Texas"], ["UT", "Utah"], ["VT", "Vermont"], ["VA", "Virginia"], ["WA", "Washington"], ["WV", "West Virginia"], ["WI", "Wisconsin"], ["WY", "Wyoming"]
+];
+
+const defaultStateRule = (state: string, name: string): StateRule => ({
+  state,
+  name: `${name} — Unclaimed Property Program`,
+  website: "https://unclaimed.org/",
+  claimProcess: "Use the NAUPA state directory to open the official state program. Search is free; validate ownership and claim requirements directly with the state office.",
+  documentationRequired: ["Government-issued ID", "Evidence linking claimant to reported owner/address", "Heirship or estate authority documents when applicable"],
+  timeline: "State-specific; confirm the current processing estimate with the official program before setting client expectations.",
+  maxCommission: "Counsel review required: finder registration, contract, fee, solicitation, and cooling-off rules vary by jurisdiction.",
+  probateAdvanceStatus: "Counsel review required before any offer or assignment.",
+  probateAdvanceNotes: "Confirm probate assignment enforceability, notice/court requirements, consumer-finance treatment, disclosures, and county procedure for the specific estate."
+});
+
+export const STATE_RULES: Record<string, StateRule> = Object.fromEntries(
+  ALL_STATES.map(([state, name]) => [state, { ...defaultStateRule(state, name), ...STATE_RULE_OVERRIDES[state], state, probateAdvanceStatus: STATE_RULE_OVERRIDES[state]?.probateAdvanceStatus || defaultStateRule(state, name).probateAdvanceStatus, probateAdvanceNotes: STATE_RULE_OVERRIDES[state]?.probateAdvanceNotes || defaultStateRule(state, name).probateAdvanceNotes }])
+) as Record<string, StateRule>;

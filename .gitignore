@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Local-only case data, browser state, and temporary workspace files.
+data.sqlite
+cloak-profile/
+.hermes/
+work/

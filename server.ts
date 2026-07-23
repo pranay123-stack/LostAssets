@@ -13,7 +13,8 @@ import { GoogleGenAI } from "@google/genai";
 import { HermesAgentHandler } from "./server/hermes-agent";
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
+const SPACETIME_URL = process.env.SPACETIME_URL || "http://127.0.0.1:3001";
 
 app.use(cors());
 app.use(express.json());
@@ -22,8 +23,11 @@ app.use(express.json());
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// Initialize SQLite database
-const db = new Database("data.sqlite");
+// The database can stay outside the synced source folder.  Set DATABASE_PATH
+// when launching locally; fall back to a project-local file for fresh installs.
+const DATABASE_PATH = process.env.DATABASE_PATH || path.resolve("data.sqlite");
+const db = new Database(DATABASE_PATH);
+console.log(`Using SQLite database: ${DATABASE_PATH}`);
 
 // Set up database table
 db.exec(`
@@ -64,6 +68,74 @@ additionalColumns.forEach(colSql => {
     // Column already exists
   }
 });
+
+// Reclaim IQ is a separate high-value retirement-recovery queue. It never
+// stores a full SSN: keep only a last-four value or an external vault reference.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reclaim_iq_cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id TEXT NOT NULL UNIQUE,
+    owner_name TEXT NOT NULL,
+    owner_state TEXT,
+    ssn_last4 TEXT,
+    identity_vault_reference TEXT,
+    privacy_authorized INTEGER NOT NULL DEFAULT 0,
+    agent_status TEXT NOT NULL DEFAULT 'Locked',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+// Probate underwriting data model. These tables record decision-support inputs
+// and approvals; they do not authorize or fund an advance.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS probate_underwriting_cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    underwriting_id TEXT NOT NULL UNIQUE,
+    reclaim_case_id TEXT,
+    estate_case_number TEXT,
+    state_code TEXT NOT NULL,
+    county TEXT,
+    expected_net_share REAL,
+    requested_advance REAL,
+    timeline_months INTEGER,
+    estate_concentration_pct REAL,
+    status TEXT NOT NULL DEFAULT 'Draft',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS probate_score_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    underwriting_id TEXT NOT NULL,
+    heir_confidence REAL NOT NULL,
+    estate_quality REAL NOT NULL,
+    timeline_score REAL NOT NULL,
+    exposure_score REAL NOT NULL,
+    composite_score REAL NOT NULL,
+    ltv_pct REAL NOT NULL,
+    pricing_band TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    calculated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS probate_advance_scenarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    underwriting_id TEXT NOT NULL,
+    discount_band TEXT,
+    proposed_advance REAL,
+    expected_repayment REAL,
+    projected_duration_months INTEGER,
+    review_status TEXT NOT NULL DEFAULT 'Not offered',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS probate_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    underwriting_id TEXT NOT NULL,
+    actor_type TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    event_hash TEXT,
+    metadata_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
 
 // Helper: Custom CSV Line Parser that handles quotes
 function parseCSVLine(line: string): string[] {
@@ -396,6 +468,12 @@ app.post("/api/upload-csv", upload.single("file"), (req, res) => {
 // State rule mock scraper
 app.get("/api/scrape", async (req, res) => {
   const { firstName, lastName, state, highValue } = req.query;
+  const requestedLimit = Number(req.query.limit || 100);
+  const resultLimit = [100, 500, 1000, 2500, 5000].includes(requestedLimit) ? requestedLimit : 100;
+  const requestedClaimantType = String(req.query.claimantType || "all").toLowerCase();
+  const normalizedClaimantType = ["all", "identity", "entity", "estate", "individual", "corporate"].includes(requestedClaimantType)
+    ? requestedClaimantType
+    : "all";
   
   if (!state) {
     return res.status(400).json({ error: "Missing required query parameters: state" });
@@ -426,7 +504,19 @@ app.get("/api/scrape", async (req, res) => {
       params.push(`%${searchLName}%`);
     }
 
-    localQuery += " ORDER BY amount DESC LIMIT 100";
+    if (normalizedClaimantType !== "all") {
+      const claimantText = "UPPER(COALESCE(first_name,''))";
+      const entityTerms = ["LLC", "INC", "CORP", "COMPANY", "TRUST", "LP", "LTD"];
+      const estateTerms = ["ESTATE", "DECEASED", "HEIR", "PROBATE"];
+      const terms = normalizedClaimantType === "entity" || normalizedClaimantType === "corporate" ? entityTerms : estateTerms;
+      const matchesType = terms.map(term => `${claimantText} LIKE '%${term}%'`).join(" OR ");
+      localQuery += normalizedClaimantType === "individual" || normalizedClaimantType === "identity"
+        ? ` AND NOT (${entityTerms.concat(estateTerms).map(term => `${claimantText} LIKE '%${term}%'`).join(" OR ")})`
+        : ` AND (${matchesType})`;
+    }
+
+    localQuery += " ORDER BY amount DESC LIMIT ?";
+    params.push(resultLimit);
     const localStmt = db.prepare(localQuery);
     const existingRecords = localStmt.all(...params) as any[];
 
@@ -440,7 +530,12 @@ app.get("/api/scrape", async (req, res) => {
         amount: rec.amount,
         company: rec.company,
         location: rec.location,
-        state_id: rec.state_id
+        state_id: rec.state_id,
+        category_title: rec.category_title,
+        sub_type: rec.sub_type,
+        decedent_name: rec.decedent_name,
+        source: rec.source,
+        scraped_at: rec.scraped_at
       }));
 
       return res.json({
@@ -1091,6 +1186,55 @@ app.get("/api/sqlite/export", (req, res) => {
   }
 });
 
+// Local-only health probe for the real-time sidecar. No credentials or case data
+// are sent to the sidecar by this endpoint.
+app.get("/api/sidecar/status", async (_req, res) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await fetch(SPACETIME_URL, { signal: controller.signal });
+    res.json({ online: response.status < 500, url: SPACETIME_URL, status: response.status });
+  } catch {
+    res.json({ online: false, url: SPACETIME_URL });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+// Reclaim IQ: high-value retirement and abandoned-plan queue. Full SSNs are
+// deliberately rejected; verified identity remains in the approved identity system.
+app.get("/api/reclaim-iq/summary", (_req, res) => {
+  try {
+    const summary = db.prepare(`
+      SELECT
+        COUNT(*) AS totalCases,
+        SUM(CASE WHEN privacy_authorized = 1 THEN 1 ELSE 0 END) AS privacyReadyCases,
+        SUM(CASE WHEN agent_status = 'Planning ready' THEN 1 ELSE 0 END) AS agentReadyCases
+      FROM reclaim_iq_cases
+    `).get() as { totalCases: number; privacyReadyCases: number | null; agentReadyCases: number | null };
+    res.json({ totalCases: summary.totalCases, privacyReadyCases: summary.privacyReadyCases || 0, agentReadyCases: summary.agentReadyCases || 0 });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/reclaim-iq/cases", (req, res) => {
+  try {
+    const { ownerName, ownerState, ssnLast4, vaultReference, privacyAuthorized } = req.body || {};
+    if (!ownerName || typeof ownerName !== "string") return res.status(400).json({ error: "Owner name is required." });
+    if (ssnLast4 && !/^\d{4}$/.test(String(ssnLast4))) return res.status(400).json({ error: "Use only the final four SSN digits." });
+    const caseId = `RIQ-${Date.now().toString(36).toUpperCase()}`;
+    const authorized = privacyAuthorized === true ? 1 : 0;
+    db.prepare(`
+      INSERT INTO reclaim_iq_cases (case_id, owner_name, owner_state, ssn_last4, identity_vault_reference, privacy_authorized, agent_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(caseId, ownerName.trim(), String(ownerState || "").toUpperCase().slice(0, 2), ssnLast4 || null, vaultReference || null, authorized, authorized ? "Planning ready" : "Locked");
+    res.status(201).json({ caseId, agentStatus: authorized ? "Planning ready" : "Locked" });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Endpoint for 12-Field Specialized Asset & Claim Multi-Category Search
 app.post("/api/specialized-search", async (req, res) => {
   try {
@@ -1221,87 +1365,52 @@ app.post("/api/specialized-search", async (req, res) => {
       }
     };
 
-    const categoriesToQuery = targetCategory === "all" 
-      ? Object.keys(CATEGORIES_MAP) 
-      : [targetCategory];
-
-    let synthesizedRecords: any[] = [];
+    let matchedRecords: any[] = [];
 
     // Check if we have matching records in local SQLite database
     try {
+      const categoryMeta = targetCategory === "all" ? undefined : CATEGORIES_MAP[targetCategory];
       const dbStmt = db.prepare(`
         SELECT * FROM scraped_records 
-        WHERE (LOWER(first_name) LIKE ? OR LOWER(last_name) LIKE ? OR LOWER(company) LIKE ?)
+        WHERE owner_name = ?
+        AND (? = '' OR owner_state = ?)
         AND amount >= ?
-        LIMIT 50
+        LIMIT 500
       `);
-      const searchPattern = `%${searchOwner.toLowerCase()}%`;
-      const dbRows = dbStmt.all(searchPattern, searchPattern, searchPattern, thresholdAmount) as any[];
+      // owner_name and owner_state are indexed in the production database.
+      // Exact matching keeps a 54 GB database responsive without faking results.
+      const dbRows = dbStmt.all(
+        searchOwner, searchState, searchState, thresholdAmount
+      ) as any[];
+      const categoryRows = targetCategory === "all"
+        ? dbRows
+        : dbRows.filter((r: any) => r.category_id === targetCategory || r.category_title === categoryMeta?.title);
 
-      if (dbRows.length > 0) {
-        synthesizedRecords = dbRows.map((r, idx) => {
-          const catKey = String((idx % 12) + 1);
+      if (categoryRows.length > 0) {
+        matchedRecords = categoryRows.map((r) => {
+          const catKey = String(r.category_id || "1");
           const meta = CATEGORIES_MAP[catKey] || CATEGORIES_MAP["1"];
           return {
-            id: `SQL-${r.id}-${idx}`,
-            ownerName: `${r.first_name || ''} ${r.last_name || ''}`.trim() || searchOwner,
-            categoryNumber: parseInt(catKey),
-            categoryTitle: meta.title,
-            subType: meta.subTypes[idx % meta.subTypes.length],
-            amount: r.amount || (1250 + idx * 850),
-            state: r.state || searchState,
+            id: `SQL-${r.id}`,
+            ownerName: r.owner_name || `${r.first_name || ''} ${r.last_name || ''}`.trim() || searchOwner,
+            categoryNumber: Number(r.category_id || catKey),
+            categoryTitle: r.category_title || meta.title,
+            subType: r.sub_type || r.property_type || meta.subTypes[0],
+            amount: Number(r.amount || 0),
+            state: r.owner_state || r.state || searchState,
             custodianAgency: r.company || meta.agency,
             portalUrl: meta.portal,
             requiredDocuments: meta.docs,
             recoveryProcess: meta.process,
             finderRules: meta.rules,
-            probabilityScore: 85 + (idx % 12),
-            stateIdRef: r.state_id || `REF-${searchState}-2026-${1000 + idx}`,
+            probabilityScore: 100,
+            stateIdRef: r.state_id || "Not indexed",
             source: "SQLite Database & Local Records"
           };
         });
       }
     } catch (dbErr) {
       console.warn("SQLite query in specialized-search encountered error:", dbErr);
-    }
-
-    // Generate comprehensive results across all requested categories if db results are few
-    if (synthesizedRecords.length < 5) {
-      categoriesToQuery.forEach((catKey) => {
-        const meta = CATEGORIES_MAP[catKey];
-        if (!meta) return;
-
-        // Create 2 realistic records per category
-        meta.subTypes.slice(0, 2).forEach((subType, subIdx) => {
-          const baseVal = 2450 + (parseInt(catKey) * 1150) + (subIdx * 1800);
-          if (baseVal >= thresholdAmount) {
-            synthesizedRecords.push({
-              id: `SPEC-${catKey}-${subIdx}-${Date.now().toString(36)}`,
-              ownerName: searchOwner,
-              decedentName: decedentName || (parseInt(catKey) % 2 === 0 ? `${searchOwner} (Estate of)` : undefined),
-              categoryNumber: parseInt(catKey),
-              categoryTitle: meta.title,
-              subType,
-              amount: baseVal,
-              state: searchState,
-              custodianAgency: meta.agency,
-              portalUrl: meta.portal,
-              requiredDocuments: meta.docs,
-              recoveryProcess: meta.process,
-              finderRules: meta.rules,
-              probabilityScore: 92 - (subIdx * 5),
-              stateIdRef: `${searchState}-${catKey}0${subIdx + 1}-${refNumber || '2026-X88'}`,
-              ssnMatch: ssnLast4 ? `***-**-${ssnLast4}` : undefined,
-              source: "Multi-Source National Registry Index"
-            });
-          }
-        });
-      });
-    }
-
-    // Filter by minAmount if present
-    if (thresholdAmount > 0) {
-      synthesizedRecords = synthesizedRecords.filter(r => r.amount >= thresholdAmount);
     }
 
     res.json({
@@ -1314,9 +1423,19 @@ app.post("/api/specialized-search", async (req, res) => {
         decedentName,
         minAmount: thresholdAmount
       },
-      totalMatches: synthesizedRecords.length,
-      records: synthesizedRecords,
-      categoriesOverview: CATEGORIES_MAP
+      totalMatches: matchedRecords.length,
+      records: matchedRecords,
+      categoriesOverview: CATEGORIES_MAP,
+      categoryCounts: Object.fromEntries(
+        Object.keys(CATEGORIES_MAP).map(categoryKey => [
+          categoryKey,
+          matchedRecords.filter(record => String(record.categoryNumber) === categoryKey).length
+        ])
+      ),
+      dataSource: "Local SQLite index only",
+      message: matchedRecords.length
+        ? `Found ${matchedRecords.length} verified match${matchedRecords.length === 1 ? "" : "es"} in the local index.`
+        : "No verified matches in the local index. This category may require an approved external data connector or import."
     });
 
   } catch (error: any) {

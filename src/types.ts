@@ -8,6 +8,11 @@ export interface AssetRecord {
   type: AssetType;
   holderCompany: string;
   amount: number;
+  stateId?: string;
+  categoryTitle?: string;
+  subType?: string;
+  decedentName?: string;
+  source?: string;
 }
 
 export interface Relative {
@@ -30,6 +35,8 @@ export interface SearchQuery {
   generalHighValue?: boolean;
   targetState?: string;
   assetType?: string;
+  claimantType?: "all" | "identity" | "entity" | "estate" | "individual" | "corporate";
+  resultLimit?: 100 | 500 | 1000 | 2500 | 5000;
 }
 
 export interface SavedCase {
@@ -58,6 +65,8 @@ export interface RecentSearch {
   phoneNumber: string;
   targetState: string;
   assetType: string;
+  claimantType: "all" | "identity" | "entity" | "estate" | "individual" | "corporate";
+  resultLimit: 100 | 500 | 1000 | 2500 | 5000;
   timestamp: string;
 }
 

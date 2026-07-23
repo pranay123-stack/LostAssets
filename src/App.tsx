@@ -5,7 +5,8 @@ import {
   Save, ChevronUp, ChevronDown, AlertTriangle, CheckCircle, Network, 
   Radar, Terminal, UserSearch, Award, Shield, UserCheck, Layers, 
   Megaphone, Send, Upload, Scale, Folder, Coins, ShieldAlert, CheckCircle2, Globe,
-  CheckSquare, Square, History, Printer, Trash2, X
+  CheckSquare, Square, History, Printer, Trash2, X, Settings, Workflow, Bot,
+  Contact, LayoutDashboard, ArrowRight, SlidersHorizontal, Maximize2, Minimize2, BriefcaseBusiness
 } from "lucide-react";
 import { cn } from "./lib/utils";
 import { Button, buttonVariants } from "./components/ui/button";
@@ -31,6 +32,7 @@ import { PrintCaseModal } from "./components/PrintCaseModal";
 import { SpecializedAssetSearch } from "./components/SpecializedAssetSearch";
 import { LostAssetsIQLogo } from "./components/LostAssetsIQLogo";
 import { DatabaseExplorer } from "./components/DatabaseExplorer";
+import { ReclaimIQ } from "./components/ReclaimIQ";
 
 import { AssetRecord, Relative, SavedCase, SearchQuery, RecentSearch } from "./types";
 import { searchLostAssets, trackRelatives, AVAILABLE_STATES, ASSET_TYPES } from "./services/mockDataService";
@@ -63,12 +65,15 @@ export function recommendCategoryName(fName: string, lName: string, state: strin
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<
-    "client_intake" | "search_workbench" | "saved_cases" | "specialized_search" | "ca_bundling" | 
+    "workflow_home" | "client_intake" | "search_workbench" | "crm_pipeline" | "saved_cases" | "reclaim_iq" | "specialized_search" | "ca_bundling" | 
     "asset_combiner" | "ca_investigator_hub" | "campaigns" | "trace_osint" | 
-    "multistate_search" | "hermes" | "asset_db" | "regulations" | "import_csv" | "database_explorer"
-  >("client_intake");
+    "multistate_search" | "hermes" | "asset_db" | "regulations" | "import_csv" | "database_explorer" |
+    "settings_admin"
+  >("workflow_home");
+  const [focusMode, setFocusMode] = useState(false);
 
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [stateWikiQuery, setStateWikiQuery] = useState("");
   
   const [searchMode, setSearchMode] = useState<"identity" | "highValue">("identity");
   const [firstName, setFirstName] = useState("Thomson Diggs");
@@ -77,11 +82,14 @@ export default function App() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [targetState, setTargetState] = useState("");
   const [assetType, setAssetType] = useState("");
+  const [claimantType, setClaimantType] = useState<"all" | "identity" | "entity" | "estate" | "individual" | "corporate">("all");
+  const [resultLimit, setResultLimit] = useState<100 | 500 | 1000 | 2500 | 5000>(100);
   
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [assets, setAssets] = useState<AssetRecord[]>([]);
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
+  const [bundleSelectedOnly, setBundleSelectedOnly] = useState(true);
   const [isSavingSelectedOnly, setIsSavingSelectedOnly] = useState(false);
   const [relatives, setRelatives] = useState<Relative[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -255,6 +263,8 @@ export default function App() {
     const activePhone = overrideParams ? (overrideParams.phoneNumber ?? "") : phoneNumber;
     const activeState = overrideParams ? (overrideParams.targetState ?? "") : targetState;
     const activeAssetType = overrideParams ? (overrideParams.assetType ?? "") : assetType;
+    const activeClaimantType = overrideParams ? (overrideParams.claimantType ?? "all") : claimantType;
+    const activeResultLimit = overrideParams ? (overrideParams.resultLimit ?? 100) : resultLimit;
 
     if (activeSearchMode === "identity" && (!activeFirstName.trim() && !activeLastName.trim() && !activeEmail.trim())) {
       if (isManual) setError("Please provide at least a name or email address.");
@@ -271,14 +281,16 @@ export default function App() {
 
     try {
       const query = activeSearchMode === "highValue" 
-        ? { generalHighValue: true, targetState: activeState, assetType: activeAssetType }
+        ? { generalHighValue: true, targetState: activeState, assetType: activeAssetType, claimantType: activeClaimantType, resultLimit: activeResultLimit }
         : { 
             firstName: activeFirstName.trim(), 
             lastName: activeLastName.trim(), 
             email: activeEmail.trim(), 
             phone: activePhone.trim(),
             targetState: activeState,
-            assetType: activeAssetType
+            assetType: activeAssetType,
+            claimantType: activeClaimantType,
+            resultLimit: activeResultLimit
           };
 
       // 1. Search for assets
@@ -299,6 +311,8 @@ export default function App() {
 
         foundAssets = [...matches, ...foundAssets];
       }
+
+      foundAssets = foundAssets.slice(0, activeResultLimit);
 
       setAssets(foundAssets);
 
@@ -328,6 +342,8 @@ export default function App() {
           phoneNumber: activePhone,
           targetState: activeState,
           assetType: activeAssetType,
+          claimantType: activeClaimantType,
+          resultLimit: activeResultLimit,
           timestamp: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })
         };
 
@@ -339,7 +355,9 @@ export default function App() {
             s.emailAddress === newSearch.emailAddress &&
             s.phoneNumber === newSearch.phoneNumber &&
             s.targetState === newSearch.targetState &&
-            s.assetType === newSearch.assetType
+            s.assetType === newSearch.assetType &&
+            s.claimantType === newSearch.claimantType &&
+            s.resultLimit === newSearch.resultLimit
           ));
           const updated = [newSearch, ...filtered].slice(0, 5);
           localStorage.setItem("recentSearches", JSON.stringify(updated));
@@ -374,6 +392,8 @@ export default function App() {
     setPhoneNumber(recent.phoneNumber);
     setTargetState(recent.targetState);
     setAssetType(recent.assetType);
+    setClaimantType(recent.claimantType ?? "all");
+    setResultLimit(recent.resultLimit ?? 100);
 
     // Update timestamp and relocate to top of list
     const updatedRecent = {
@@ -454,10 +474,10 @@ export default function App() {
     }
 
     const query = searchMode === "highValue" 
-        ? { generalHighValue: true, targetState: targetState || undefined, assetType: assetType || undefined }
-        : { firstName: firstName.trim(), lastName: lastName.trim(), email: emailAddress.trim(), phone: phoneNumber.trim(), targetState: targetState || undefined, assetType: assetType || undefined };
+        ? { generalHighValue: true, targetState: targetState || undefined, assetType: assetType || undefined, claimantType, resultLimit }
+        : { firstName: firstName.trim(), lastName: lastName.trim(), email: emailAddress.trim(), phone: phoneNumber.trim(), targetState: targetState || undefined, assetType: assetType || undefined, claimantType, resultLimit };
         
-    const assetsToSave = isSavingSelectedOnly 
+    const assetsToSave = (isSavingSelectedOnly || bundleSelectedOnly) && selectedAssetIds.length > 0
         ? assets.filter(a => selectedAssetIds.includes(a.id))
         : assets;
 
@@ -509,7 +529,10 @@ export default function App() {
     <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans">
       
       {/* 1. LEFT SIDEBAR (Desktop layout) */}
-      <aside className="hidden md:flex flex-col w-64 fixed inset-y-0 left-0 bg-[#09090b] border-r border-neutral-900 z-20">
+      <aside className={cn(
+        "hidden md:flex flex-col w-60 fixed inset-y-0 left-0 bg-[#09090b] border-r border-neutral-900 z-20 transition-transform duration-200",
+        focusMode && "-translate-x-full"
+      )}>
         
         {/* Sidebar Header Title lockup */}
         <div className="p-4 border-b border-neutral-900 bg-neutral-950/60">
@@ -519,11 +542,24 @@ export default function App() {
         {/* Sidebar Navigation */}
         <div className="flex-1 overflow-y-auto py-5 px-3 space-y-6 scrollbar-thin">
           
-          {/* Section A: INVESTIGATIONS */}
+          {/* Section A: PRIMARY OPERATIONAL FLOW */}
           <div className="space-y-1">
             <div className="text-[10px] uppercase tracking-widest text-neutral-500 font-bold px-3 mb-2.5 font-mono">
-              INVESTIGATIONS
+              OPERATIONS · 01—04
             </div>
+
+            <button
+              onClick={() => setActiveTab("workflow_home")}
+              className={cn(
+                "w-full flex items-center space-x-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all text-left",
+                activeTab === "workflow_home"
+                  ? "bg-orange-500/10 text-orange-400 border border-orange-500/20 shadow-sm"
+                  : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/40"
+              )}
+            >
+              <LayoutDashboard className={cn("w-4 h-4", activeTab === "workflow_home" ? "text-orange-500" : "text-neutral-500")} />
+              <span>OPERATIONS HOME</span>
+            </button>
             
             <button
               onClick={() => setActiveTab("client_intake")}
@@ -535,7 +571,7 @@ export default function App() {
               )}
             >
               <UserCheck className={cn("w-4 h-4", activeTab === "client_intake" ? "text-orange-500" : "text-neutral-500")} />
-              <span>CLIENT INTAKE</span>
+              <span>01 · INTAKE</span>
             </button>
 
             <button
@@ -548,7 +584,20 @@ export default function App() {
               )}
             >
               <Search className={cn("w-4 h-4", activeTab === "search_workbench" ? "text-orange-500" : "text-neutral-500")} />
-              <span>SEARCH WORKBENCH</span>
+              <span>02 · SEARCH</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab("crm_pipeline")}
+              className={cn(
+                "w-full flex items-center space-x-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all text-left",
+                activeTab === "crm_pipeline"
+                  ? "bg-orange-500/10 text-orange-400 border border-orange-500/20 shadow-sm"
+                  : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/40"
+              )}
+            >
+              <Contact className={cn("w-4 h-4", activeTab === "crm_pipeline" ? "text-orange-500" : "text-neutral-500")} />
+              <span>03 · CRM PIPELINE</span>
             </button>
 
             <button
@@ -561,7 +610,7 @@ export default function App() {
               )}
             >
               <Folder className={cn("w-4 h-4", activeTab === "saved_cases" ? "text-orange-500" : "text-neutral-500")} />
-              <span>SAVED CASES</span>
+              <span>04 · CASE FILES</span>
             </button>
 
             <button
@@ -575,16 +624,35 @@ export default function App() {
             >
               <Coins className={cn("w-4 h-4", activeTab === "specialized_search" ? "text-orange-500" : "text-neutral-500")} />
               <div className="flex flex-col">
-                <span>12-FIELD ASSET SEARCH</span>
+                <span>ADVANCED SEARCH</span>
                 <span className="text-[9px] text-orange-400 font-mono font-normal">NAUPA, PBGC, Bonds, VA</span>
               </div>
             </button>
           </div>
 
-          {/* Section B: CALIFORNIA TOOLS */}
+          {/* Section B: HIGH-VALUE RETIREMENT RECOVERY */}
+          <div className="space-y-1">
+            <div className="text-[10px] uppercase tracking-widest text-orange-400/80 font-bold px-3 mb-2.5 font-mono">
+              HIGH-VALUE RECLAIM IQ
+            </div>
+            <button
+              onClick={() => setActiveTab("reclaim_iq")}
+              className={cn(
+                "w-full flex items-center space-x-2.5 px-3 py-2.5 text-xs font-semibold rounded-lg transition-all text-left",
+                activeTab === "reclaim_iq"
+                  ? "bg-orange-500/10 text-orange-400 border border-orange-500/20 shadow-sm"
+                  : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/40"
+              )}
+            >
+              <BriefcaseBusiness className={cn("w-4 h-4", activeTab === "reclaim_iq" ? "text-orange-500" : "text-neutral-500")} />
+              <div><span>RECLAIM IQ ENGINE</span><span className="block text-[9px] font-normal text-neutral-500 mt-0.5">401(k) · PBGC · abandoned plans</span></div>
+            </button>
+          </div>
+
+          {/* Section C: INVESTIGATION TOOLS */}
           <div className="space-y-1">
             <div className="text-[10px] uppercase tracking-widest text-neutral-500 font-bold px-3 mb-2.5 font-mono">
-              CALIFORNIA TOOLS
+              INVESTIGATION TOOLS
             </div>
 
             <button
@@ -627,10 +695,10 @@ export default function App() {
             </button>
           </div>
 
-          {/* Section C: OUTREACH & DATA */}
+          {/* Section C: OPERATIONS SUPPORT */}
           <div className="space-y-1">
             <div className="text-[10px] uppercase tracking-widest text-neutral-500 font-bold px-3 mb-2.5 font-mono">
-              OUTREACH & DATA
+              OPERATIONS SUPPORT
             </div>
 
             <button
@@ -681,8 +749,8 @@ export default function App() {
                   : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/40"
               )}
             >
-              <Send className={cn("w-4 h-4", activeTab === "hermes" ? "text-orange-500" : "text-neutral-500")} />
-              <span>HERMES</span>
+              <Bot className={cn("w-4 h-4", activeTab === "hermes" ? "text-orange-500" : "text-neutral-500")} />
+              <span>HERMES AGENTS</span>
             </button>
 
             <button
@@ -736,11 +804,24 @@ export default function App() {
               <Database className={cn("w-4 h-4", activeTab === "database_explorer" ? "text-orange-500" : "text-neutral-500")} />
               <span>DATABASE EXPLORER</span>
             </button>
+
+            <button
+              onClick={() => setActiveTab("settings_admin")}
+              className={cn(
+                "w-full flex items-center space-x-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all text-left",
+                activeTab === "settings_admin"
+                  ? "bg-orange-500/10 text-orange-400 border border-orange-500/20 shadow-sm"
+                  : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/40"
+              )}
+            >
+              <Settings className={cn("w-4 h-4", activeTab === "settings_admin" ? "text-orange-500" : "text-neutral-500")} />
+              <span>SETTINGS & ADMIN</span>
+            </button>
           </div>
         </div>
 
         {/* Region panel at bottom-left */}
-        <div className="p-4 border-t border-neutral-900 bg-[#070708] space-y-1.5 font-mono select-none">
+        <div className="p-4 border-t border-neutral-900 bg-[#070708] space-y-3 font-mono select-none">
           <div className="text-[9px] uppercase tracking-wider text-neutral-500 font-bold">REGION</div>
           <div className="flex items-center space-x-2">
             <span className="text-[10px] bg-orange-500/10 border border-orange-500/30 text-orange-400 px-2 py-0.5 rounded font-bold">
@@ -748,8 +829,22 @@ export default function App() {
             </span>
             <span className="text-[10px] text-neutral-400 font-mono">Multi-State Enabled</span>
           </div>
+          <Button variant="outline" size="sm" onClick={() => setFocusMode(true)} className="w-full border-neutral-800 text-xs justify-center">
+            <Maximize2 className="w-3.5 h-3.5 mr-2" /> Focus view
+          </Button>
         </div>
       </aside>
+
+      {focusMode && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setFocusMode(false)}
+          className="hidden md:flex fixed top-5 left-5 z-40 border-neutral-800 bg-neutral-950/95 text-sm shadow-lg"
+        >
+          <Minimize2 className="w-4 h-4 mr-2" /> Show navigation
+        </Button>
+      )}
 
       {/* MOBILE HEADER BAR */}
       <header className="md:hidden flex items-center justify-between h-14 px-4 border-b border-neutral-900 bg-[#09090b] sticky top-0 z-30">
@@ -768,9 +863,9 @@ export default function App() {
       {/* MOBILE NAVIGATION OVERLAY DRAWER */}
       {mobileMenuOpen && (
         <div className="md:hidden fixed inset-0 z-40 bg-neutral-950/95 flex flex-col pt-16 px-4 animate-fade-in overflow-y-auto">
-          <h3 className="text-[10px] tracking-wider text-neutral-500 font-bold mb-4 uppercase">INVESTIGATIONS</h3>
+          <h3 className="text-[10px] tracking-wider text-neutral-500 font-bold mb-4 uppercase">OPERATIONS · 01—04</h3>
           <div className="flex flex-col gap-1 pb-6 border-b border-neutral-900">
-            {["client_intake", "search_workbench", "saved_cases"].map((t) => (
+            {["workflow_home", "client_intake", "search_workbench", "crm_pipeline", "saved_cases"].map((t) => (
               <button
                 key={t}
                 onClick={() => { setActiveTab(t as any); setMobileMenuOpen(false); }}
@@ -781,9 +876,9 @@ export default function App() {
             ))}
           </div>
 
-          <h3 className="text-[10px] tracking-wider text-neutral-500 font-bold my-4 uppercase">CALIFORNIA ACTIONS</h3>
+          <h3 className="text-[10px] tracking-wider text-neutral-500 font-bold my-4 uppercase">INVESTIGATION TOOLS</h3>
           <div className="flex flex-col gap-1 pb-6 border-b border-neutral-900">
-            {["ca_bundling", "asset_combiner", "ca_investigator_hub"].map((t) => (
+            {["reclaim_iq", "ca_bundling", "asset_combiner", "ca_investigator_hub"].map((t) => (
               <button
                 key={t}
                 onClick={() => { setActiveTab(t as any); setMobileMenuOpen(false); }}
@@ -794,9 +889,9 @@ export default function App() {
             ))}
           </div>
 
-          <h3 className="text-[10px] tracking-wider text-neutral-500 font-bold my-4 uppercase font-mono">OUTREACH & DATA</h3>
+          <h3 className="text-[10px] tracking-wider text-neutral-500 font-bold my-4 uppercase font-mono">OPERATIONS SUPPORT</h3>
           <div className="flex flex-col gap-1 pb-8">
-            {["campaigns", "trace_osint", "multistate_search", "hermes", "asset_db", "regulations", "import_csv"].map((t) => (
+            {["campaigns", "trace_osint", "multistate_search", "asset_db", "regulations", "import_csv", "database_explorer", "settings_admin", "hermes"].map((t) => (
               <button
                 key={t}
                 onClick={() => { setActiveTab(t as any); setMobileMenuOpen(false); }}
@@ -810,10 +905,91 @@ export default function App() {
       )}
 
       {/* 2. MAIN BODY CONTENT AREA */}
-      <main className="md:pl-64 min-h-screen flex flex-col pt-0 md:pt-4">
-        <div className="p-4 md:p-8 max-w-7xl w-full mx-auto space-y-6">
+      <main className={cn("min-h-screen flex flex-col pt-0 md:pt-4 transition-[padding] duration-200", focusMode ? "md:pl-0" : "md:pl-60")}>
+        <div className="p-5 md:p-8 xl:p-10 max-w-none w-full mx-auto space-y-7">
           
           {/* A) ACTIVE SUBAREA RENDER ROUTER */}
+
+          {/* OPERATIONS HOME — the canonical end-to-end workflow */}
+          {activeTab === "workflow_home" && (
+            <div className="space-y-8 animate-fade-in">
+              <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 border-b border-neutral-900 pb-6">
+                <div>
+                  <div className="flex items-center gap-2 text-[10px] font-mono font-bold tracking-[0.2em] text-orange-400 uppercase mb-2">
+                    <Workflow className="w-4 h-4" /> Operating system
+                  </div>
+                  <h1 className="text-3xl font-semibold tracking-tight text-neutral-50">Recovery operations</h1>
+                  <p className="text-sm text-neutral-400 mt-2 max-w-2xl">
+                    Move every opportunity through one controlled path—from discovery to a closed, auditable recovery.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setActiveTab("crm_pipeline")} className="border-neutral-800">
+                    Open CRM
+                  </Button>
+                  <Button onClick={() => setActiveTab("search_workbench")} className="bg-orange-600 hover:bg-orange-700 text-white">
+                    Start a search <ArrowRight className="w-4 h-4 ml-2" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                {[
+                  { step: "01", title: "Intake", copy: "Create a person, estate, or business lead and capture consent.", tab: "client_intake", icon: UserCheck },
+                  { step: "02", title: "Search", copy: "Find, validate, select, and bundle recoverable assets.", tab: "search_workbench", icon: Search },
+                  { step: "03", title: "CRM", copy: "Qualify the lead, manage outreach, and confirm engagement.", tab: "crm_pipeline", icon: Contact },
+                  { step: "04", title: "Case file", copy: "Collect evidence, submit claims, track review, and close.", tab: "saved_cases", icon: Folder },
+                ].map((item, index) => (
+                  <button
+                    key={item.step}
+                    onClick={() => setActiveTab(item.tab as any)}
+                    className="group text-left rounded-xl border border-neutral-850 bg-[#07131a] p-5 hover:border-orange-500/40 hover:bg-[#081a22] transition-all"
+                  >
+                    <div className="flex items-center justify-between mb-8">
+                      <span className="text-[10px] font-mono tracking-widest text-orange-400">STEP {item.step}</span>
+                      <item.icon className="w-5 h-5 text-neutral-500 group-hover:text-orange-400" />
+                    </div>
+                    <h2 className="text-lg font-semibold text-neutral-100">{item.title}</h2>
+                    <p className="text-xs leading-relaxed text-neutral-450 mt-2">{item.copy}</p>
+                    {index < 3 && <ArrowRight className="w-4 h-4 text-neutral-600 mt-5 group-hover:translate-x-1 transition-transform" />}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                <Card className="lg:col-span-2 border-neutral-850 bg-[#07131a] text-neutral-100">
+                  <CardHeader>
+                    <CardTitle className="text-base">Pipeline health</CardTitle>
+                    <CardDescription className="text-neutral-500">Live case counts by operational stage</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+                      {(["Lead", "Intake", "Evidence", "Submitted", "Review", "Paid"] as const).map(stage => (
+                        <button key={stage} onClick={() => setActiveTab(stage === "Lead" || stage === "Intake" ? "crm_pipeline" : "saved_cases")} className="rounded-lg border border-neutral-850 bg-neutral-950/40 p-3 text-left hover:border-orange-500/30">
+                          <div className="text-xl font-semibold text-neutral-100">{savedCases.filter(c => (c.status || "Lead") === stage).length}</div>
+                          <div className="text-[9px] uppercase tracking-wider text-neutral-500 mt-1">{stage}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card className="border-neutral-850 bg-[#07131a] text-neutral-100">
+                  <CardHeader>
+                    <CardTitle className="text-base">System controls</CardTitle>
+                    <CardDescription className="text-neutral-500">Rules, data, and agent operations</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    <Button variant="outline" onClick={() => setActiveTab("settings_admin")} className="w-full justify-start border-neutral-850">
+                      <Settings className="w-4 h-4 mr-2" /> Settings & admin
+                    </Button>
+                    <Button variant="outline" onClick={() => setActiveTab("hermes")} className="w-full justify-start border-neutral-850">
+                      <Bot className="w-4 h-4 mr-2" /> Hermes agent system
+                    </Button>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          )}
 
           {/* 1) CLIENT INTAKE PANEL */}
           {activeTab === "client_intake" && (
@@ -932,6 +1108,40 @@ export default function App() {
                         </div>
                       </div>
 
+                      <div className="grid grid-cols-2 gap-2 pb-2">
+                        <div className="space-y-1.5">
+                          <Label htmlFor="claimantType" className="text-[10px] uppercase tracking-wide text-neutral-400 font-bold">Claimant Type</Label>
+                          <select
+                            id="claimantType"
+                            value={claimantType}
+                            onChange={e => setClaimantType(e.target.value as typeof claimantType)}
+                            className="flex h-10 w-full rounded-md border border-neutral-850 bg-neutral-950 px-3 py-2 text-sm text-neutral-350 focus:border-orange-500 focus-visible:outline-none"
+                          >
+                            <option value="all">All</option>
+                            <option value="identity">Identity</option>
+                            <option value="entity">Entity</option>
+                            <option value="estate">Estate</option>
+                            <option value="individual">Individual</option>
+                            <option value="corporate">Corporate / Corp</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="resultLimit" className="text-[10px] uppercase tracking-wide text-neutral-400 font-bold">Records to Look Up</Label>
+                          <select
+                            id="resultLimit"
+                            value={resultLimit}
+                            onChange={e => setResultLimit(Number(e.target.value) as typeof resultLimit)}
+                            className="flex h-10 w-full rounded-md border border-neutral-850 bg-neutral-950 px-3 py-2 text-sm text-neutral-350 focus:border-orange-500 focus-visible:outline-none"
+                          >
+                            <option value="100">100</option>
+                            <option value="500">500</option>
+                            <option value="1000">1,000</option>
+                            <option value="2500">2,500</option>
+                            <option value="5000">5,000</option>
+                          </select>
+                        </div>
+                      </div>
+
                       <Button 
                         type="submit" 
                         disabled={isSearching} 
@@ -1009,6 +1219,15 @@ export default function App() {
                                     {run.assetType}
                                   </span>
                                 )}
+
+                                {run.claimantType && run.claimantType !== "all" && (
+                                  <span className="text-[9px] font-mono bg-neutral-900 border border-neutral-800 text-neutral-400 px-1.5 py-0.5 rounded uppercase">
+                                    {run.claimantType}
+                                  </span>
+                                )}
+                                <span className="text-[9px] font-mono bg-neutral-900 border border-neutral-800 text-neutral-500 px-1.5 py-0.5 rounded">
+                                  {run.resultLimit ?? 100}
+                                </span>
 
                                 {run.emailAddress && (
                                   <span className="text-[9px] font-mono bg-neutral-900 border border-neutral-800 text-neutral-500 px-1.5 py-0.5 rounded truncate max-w-[80px]" title={run.emailAddress}>
@@ -1193,16 +1412,26 @@ export default function App() {
                             </span>
                           </div>
                           <div className="flex items-center gap-2 w-full sm:w-auto">
+                            <label className="flex items-center gap-2 text-[10px] font-mono text-neutral-300 cursor-pointer mr-1">
+                              <input
+                                type="checkbox"
+                                checked={bundleSelectedOnly}
+                                onChange={e => setBundleSelectedOnly(e.target.checked)}
+                                className="h-3.5 w-3.5 accent-orange-600"
+                              />
+                              Bundle selected into one case file
+                            </label>
                             <Button 
                               onClick={() => {
                                 setIsSavingSelectedOnly(true);
+                                setBundleSelectedOnly(true);
                                 setSaveDialogOpen(true);
                               }} 
                               size="sm" 
                               className="flex-1 sm:flex-initial bg-neutral-900 border border-neutral-800 text-neutral-200 hover:bg-neutral-800 font-mono text-[10px] h-8 px-3"
                             >
                               <Save className="w-3.5 h-3.5 mr-1" />
-                              Save Selected
+                              Save Bundle
                             </Button>
                             <Button 
                               onClick={handleDraftMassEmail} 
@@ -1235,9 +1464,11 @@ export default function App() {
                                     className="cursor-pointer rounded border-neutral-800 bg-neutral-900 text-orange-500 focus:ring-orange-500 focus:ring-offset-neutral-950 h-3.5 w-3.5 accent-orange-600"
                                   />
                                 </TableHead>
-                                <TableHead className="font-mono text-[10px] uppercase tracking-wider text-neutral-400">Claimant Name</TableHead>
-                                <TableHead className="font-mono text-[10px] uppercase tracking-wider text-neutral-400">Property Type</TableHead>
-                                <TableHead className="font-mono text-[10px] uppercase tracking-wider text-neutral-400 font-bold">Losing Custodian</TableHead>
+                                <TableHead className="font-mono text-[10px] uppercase tracking-wider text-neutral-400">Claimant / Decedent</TableHead>
+                                <TableHead className="font-mono text-[10px] uppercase tracking-wider text-neutral-400">Record ID</TableHead>
+                                <TableHead className="font-mono text-[10px] uppercase tracking-wider text-neutral-400">Property / Subtype</TableHead>
+                                <TableHead className="font-mono text-[10px] uppercase tracking-wider text-neutral-400 font-bold">Custodian / Source</TableHead>
+                                <TableHead className="font-mono text-[10px] uppercase tracking-wider text-neutral-400">Location</TableHead>
                                 <TableHead className="font-mono text-[10px] uppercase tracking-wider text-neutral-400">State</TableHead>
                                 <TableHead className="font-mono text-[10px] uppercase tracking-wider text-neutral-400 text-right">Value</TableHead>
                               </TableRow>
@@ -1265,9 +1496,21 @@ export default function App() {
                                       className="cursor-pointer rounded border-neutral-800 bg-neutral-900 text-orange-500 focus:ring-orange-500 focus:ring-offset-neutral-950 h-3.5 w-3.5 accent-orange-600"
                                     />
                                   </TableCell>
-                                  <TableCell className="font-mono text-xs font-semibold text-neutral-100">{asset.name}</TableCell>
-                                  <TableCell className="text-xs text-neutral-400">{asset.type}</TableCell>
-                                  <TableCell className="text-xs text-neutral-450">{asset.holderCompany}</TableCell>
+                                  <TableCell className="font-mono text-xs font-semibold text-neutral-100">
+                                    <div>{asset.name}</div>
+                                    {asset.decedentName && <div className="text-[10px] text-neutral-500">Decedent: {asset.decedentName}</div>}
+                                  </TableCell>
+                                  <TableCell className="font-mono text-[10px] text-neutral-400">{asset.stateId || asset.id}</TableCell>
+                                  <TableCell className="text-xs text-neutral-400">
+                                    <div>{asset.type}</div>
+                                    {asset.subType && <div className="text-[10px] text-neutral-500">Subtype: {asset.subType}</div>}
+                                    {asset.categoryTitle && <div className="text-[10px] text-neutral-500">Category: {asset.categoryTitle}</div>}
+                                  </TableCell>
+                                  <TableCell className="text-xs text-neutral-450">
+                                    <div>{asset.holderCompany}</div>
+                                    {asset.source && <div className="text-[10px] text-neutral-500">{asset.source}</div>}
+                                  </TableCell>
+                                  <TableCell className="text-xs text-neutral-450 max-w-[220px] truncate" title={asset.address}>{asset.address}</TableCell>
                                   <TableCell className="font-mono text-xs text-orange-450 font-semibold">{asset.state}</TableCell>
                                   <TableCell className="text-right font-mono text-xs font-bold text-emerald-450">
                                     ${asset.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
@@ -1334,7 +1577,9 @@ export default function App() {
                         className="bg-neutral-100 hover:bg-neutral-300 text-neutral-950 font-mono font-bold text-xs h-10 px-5"
                      >
                         <Save className="w-4 h-4 mr-2 text-neutral-900" />
-                        Save leads folder ({assets.length} claims)
+                        {bundleSelectedOnly && selectedAssetIds.length > 0
+                          ? `Save bundle (${selectedAssetIds.length} claims)`
+                          : `Save leads folder (${assets.length} claims)`}
                      </Button>
                   </div>
                 )}
@@ -1342,7 +1587,71 @@ export default function App() {
             </div>
           )}
 
-          {/* 3) SAVED CASES PAGE */}
+          {/* 4) CASE FILES PAGE */}
+          {/* CRM PIPELINE — lead qualification and engagement before case work */}
+          {activeTab === "crm_pipeline" && (
+            <div className="space-y-6 animate-fade-in">
+              <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 border-b border-neutral-900 pb-5">
+                <div>
+                  <div className="text-[10px] font-mono font-bold tracking-[0.2em] text-orange-400 uppercase mb-2">03 · Relationship management</div>
+                  <h2 className="text-2xl font-bold tracking-tight">CRM pipeline</h2>
+                  <p className="text-xs text-neutral-450 mt-1">Qualify leads and secure engagement before promoting work into an active case file.</p>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setActiveTab("campaigns")} className="border-neutral-850">
+                    <Megaphone className="w-4 h-4 mr-2" /> Outreach
+                  </Button>
+                  <Button onClick={() => setActiveTab("client_intake")} className="bg-orange-600 hover:bg-orange-700 text-white">
+                    <UserCheck className="w-4 h-4 mr-2" /> New lead
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {[
+                  { title: "New leads", stages: ["Lead"], hint: "Unqualified opportunities" },
+                  { title: "Contact & intake", stages: ["Intake"], hint: "Identity, authority, and consent" },
+                  { title: "Ready for case", stages: ["Evidence"], hint: "Engaged and evidence collection started" },
+                ].map(column => {
+                  const columnCases = savedCases.filter(c => column.stages.includes(c.status || "Lead"));
+                  return (
+                    <div key={column.title} className="rounded-xl border border-neutral-850 bg-[#07131a] min-h-[360px]">
+                      <div className="p-4 border-b border-neutral-850 flex items-start justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold text-neutral-200">{column.title}</h3>
+                          <p className="text-[10px] text-neutral-500 mt-1">{column.hint}</p>
+                        </div>
+                        <Badge variant="outline" className="border-neutral-800 text-neutral-400">{columnCases.length}</Badge>
+                      </div>
+                      <div className="p-3 space-y-3">
+                        {columnCases.length === 0 ? (
+                          <div className="border border-dashed border-neutral-850 rounded-lg p-6 text-center text-xs text-neutral-600">No records in this stage</div>
+                        ) : columnCases.slice(0, 12).map(item => (
+                          <button key={item.id} onClick={() => setActiveTab("saved_cases")} className="w-full text-left rounded-lg border border-neutral-850 bg-neutral-950/50 p-4 hover:border-orange-500/30 transition-colors">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="font-semibold text-xs text-neutral-200 line-clamp-1">{item.ownerName || item.categoryName}</div>
+                              <ChevronRight className="w-4 h-4 text-neutral-600 shrink-0" />
+                            </div>
+                            <div className="text-[10px] text-neutral-500 mt-2">{item.assets.length} asset{item.assets.length === 1 ? "" : "s"} · {item.query.targetState || "Multi-state"}</div>
+                            <div className="text-[10px] font-mono text-orange-400 mt-3">{item.status || "Lead"}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <Alert className="bg-orange-500/5 border-orange-500/20 text-neutral-300">
+                <CheckCircle2 className="h-4 w-4 text-orange-400" />
+                <AlertTitle className="text-sm">Promotion rule</AlertTitle>
+                <AlertDescription className="text-xs text-neutral-450">
+                  Promote a lead to Evidence only after identity, claimant authority, contact permission, and recovery agreement are recorded.
+                </AlertDescription>
+              </Alert>
+            </div>
+          )}
+
           {activeTab === "saved_cases" && (() => {
              const filteredCases = savedCases.filter(c => {
                 const matchesState = dbStateFilter === "" || c.assets.some(a => a.state === dbStateFilter);
@@ -1374,8 +1683,9 @@ export default function App() {
              <div className="space-y-6 animate-fade-in">
                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-neutral-900 pb-4">
                   <div>
-                    <h2 className="text-2xl font-bold tracking-tight text-neutral-100">Saved Lead Folders</h2>
-                    <p className="text-neutral-450 text-xs text-orange-400">A unified active recovery CRM tracking leads, documents, and executor communications.</p>
+                    <div className="text-[10px] font-mono font-bold tracking-[0.2em] text-orange-400 uppercase mb-2">04 · Recovery delivery</div>
+                    <h2 className="text-2xl font-bold tracking-tight text-neutral-100">Case files</h2>
+                    <p className="text-neutral-450 text-xs">Evidence, documents, submissions, state review, payments, and the complete audit trail.</p>
                   </div>
                   <div className="flex items-center flex-wrap gap-3">
                      {filteredCases.length > 0 && (
@@ -2014,6 +2324,10 @@ export default function App() {
             />
           )}
 
+          {activeTab === "reclaim_iq" && (
+            <ReclaimIQ onOpenHermes={() => setActiveTab("hermes")} />
+          )}
+
           {/* 8) SPECIALIZED 12-FIELD ASSET SEARCH page */}
           {activeTab === "specialized_search" && (
             <SpecializedAssetSearch
@@ -2042,21 +2356,78 @@ export default function App() {
             <OutreachAndDataTools toolType="asset_db" />
           )}
 
+          {/* SETTINGS & ADMIN — operational configuration, separated from casework */}
+          {activeTab === "settings_admin" && (
+            <div className="space-y-6 animate-fade-in">
+              <div className="border-b border-neutral-900 pb-5">
+                <div className="text-[10px] font-mono font-bold tracking-[0.2em] text-orange-400 uppercase mb-2">System administration</div>
+                <h2 className="text-2xl font-bold tracking-tight">Settings & operations</h2>
+                <p className="text-xs text-neutral-450 mt-1">Configure the operating environment without mixing administration into active investigations.</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {[
+                  { title: "Organization", copy: "Company identity, offices, users, roles, and permissions.", icon: Users, action: "Manage organization" },
+                  { title: "Workflow rules", copy: "Stage gates, required fields, assignments, SLAs, and task templates.", icon: Workflow, action: "Configure workflow" },
+                  { title: "Data sources", copy: "Asset databases, state connectors, CSV imports, and database health.", icon: Database, action: "Review data sources", tab: "database_explorer" },
+                  { title: "Compliance", copy: "State regulations, fee limits, disclosures, retention, and audit policy.", icon: Scale, action: "Open regulations", tab: "regulations" },
+                  { title: "Communications", copy: "Email templates, outreach cadence, sender identity, and consent rules.", icon: Mail, action: "Manage outreach", tab: "campaigns" },
+                  { title: "Hermes agents", copy: "Agent roles, tools, approvals, run limits, logs, and escalation policy.", icon: Bot, action: "Open Hermes", tab: "hermes" },
+                ].map(item => (
+                  <Card key={item.title} className="border-neutral-850 bg-[#07131a] text-neutral-100">
+                    <CardHeader>
+                      <div className="w-9 h-9 rounded-lg bg-orange-500/10 border border-orange-500/20 flex items-center justify-center mb-2">
+                        <item.icon className="w-4 h-4 text-orange-400" />
+                      </div>
+                      <CardTitle className="text-base">{item.title}</CardTitle>
+                      <CardDescription className="text-xs text-neutral-500 leading-relaxed">{item.copy}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <Button
+                        variant="outline"
+                        className="w-full justify-between border-neutral-850 text-xs"
+                        onClick={() => item.tab && setActiveTab(item.tab as any)}
+                        disabled={!item.tab}
+                      >
+                        {item.action} <ChevronRight className="w-4 h-4" />
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              <Card className="border-neutral-850 bg-[#07131a] text-neutral-100">
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center"><SlidersHorizontal className="w-4 h-4 mr-2 text-orange-400" /> Recommended control model</CardTitle>
+                  <CardDescription className="text-neutral-500">Hermes may research and prepare work, but consequential actions remain operator-controlled.</CardDescription>
+                </CardHeader>
+                <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                  <div className="rounded-lg border border-neutral-850 p-4"><div className="font-semibold text-neutral-200">Automatic</div><p className="text-neutral-500 mt-1">Read, classify, summarize, deduplicate, and draft.</p></div>
+                  <div className="rounded-lg border border-neutral-850 p-4"><div className="font-semibold text-neutral-200">Approval required</div><p className="text-neutral-500 mt-1">Outreach, record changes, submissions, and external tool actions.</p></div>
+                  <div className="rounded-lg border border-neutral-850 p-4"><div className="font-semibold text-neutral-200">Operator only</div><p className="text-neutral-500 mt-1">Payments, deletion, permission changes, and legal attestations.</p></div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
           {/* 12) REGULATIONS rules list page */}
           {activeTab === "regulations" && (
             <div className="space-y-6 animate-fade-in text-neutral-100">
               <div className="border-b border-neutral-900 pb-4">
-                <h2 className="text-2xl font-bold tracking-tight">National Regulations Directory</h2>
-                <p className="text-neutral-450 text-xs mt-1">Official locator commission ceilings, filing timelines, and necessary claims proof documents state-by-state.</p>
+                <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+                  <div><h2 className="text-2xl font-bold tracking-tight">50-State Recovery & Probate Wiki</h2><p className="text-neutral-450 text-xs mt-1">Lost-asset claim workflow and probate-advance operating controls for every U.S. state code.</p></div>
+                  <Input value={stateWikiQuery} onChange={e => setStateWikiQuery(e.target.value)} placeholder="Filter state name or code" className="md:w-72 bg-neutral-950 border-neutral-800" />
+                </div>
+                <p className="text-[11px] text-orange-300 mt-3">Use the NAUPA directory to reach the current official state program. Finder, contract, probate, and advance rules require current jurisdiction-specific legal review.</p>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                 {Object.values(STATE_RULES).map(rule => (
+                 {Object.values(STATE_RULES).filter(rule => `${rule.state} ${rule.name}`.toLowerCase().includes(stateWikiQuery.toLowerCase())).map(rule => (
                     <Card key={rule.state} className="border-neutral-900 bg-[#0e0e11] text-neutral-105 rounded-xl">
                        <CardHeader className="bg-neutral-900/30 border-b border-neutral-900 py-3.5 px-5">
                           <CardTitle className="flex justify-between items-center text-sm font-semibold">
                              <span>State code: {rule.state}</span>
                              <a href={rule.website} target="_blank" rel="noreferrer" className="text-orange-500 hover:text-orange-300 text-xs font-normal flex items-center">
-                                Official Site <ChevronRight className="w-3.5 h-3.5 ml-1" />
+                                Official program directory <ChevronRight className="w-3.5 h-3.5 ml-1" />
                              </a>
                           </CardTitle>
                           <CardDescription className="text-neutral-500 text-xs pt-0.5">{rule.name}</CardDescription>
@@ -2085,6 +2456,12 @@ export default function App() {
                                 <div className="text-[9px] uppercase tracking-wider text-neutral-500 font-bold mb-0.5">Locator Fee limit</div>
                                 <p className="text-[11.5px] font-semibold text-orange-400">{rule.maxCommission}</p>
                              </div>
+                          </div>
+                          <Separator className="bg-neutral-900" />
+                          <div>
+                             <div className="text-[9px] uppercase tracking-wider text-neutral-500 font-bold mb-1">Probate advancement</div>
+                             <p className="text-[11.5px] text-orange-300 font-semibold font-sans">{rule.probateAdvanceStatus || "Counsel review required before any offer or assignment."}</p>
+                             <p className="text-[11px] text-neutral-400 font-sans leading-relaxed mt-1.5">{rule.probateAdvanceNotes || "Verify state and county requirements for the specific estate."}</p>
                           </div>
                        </CardContent>
                     </Card>
