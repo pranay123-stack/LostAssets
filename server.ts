@@ -34,16 +34,33 @@ db.exec(`
     company TEXT,
     location TEXT,
     state_id TEXT,
+    category_id TEXT,
+    category_title TEXT,
+    sub_type TEXT,
+    decedent_name TEXT,
+    ssn_last4 TEXT,
+    source TEXT,
     scraped_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
 
-try {
-  // Attempt to add column to existing tables
-  db.exec('ALTER TABLE scraped_records ADD COLUMN state_id TEXT');
-} catch(e) {
-  // Ignore error if column already exists
-}
+const additionalColumns = [
+  'ALTER TABLE scraped_records ADD COLUMN state_id TEXT',
+  'ALTER TABLE scraped_records ADD COLUMN category_id TEXT',
+  'ALTER TABLE scraped_records ADD COLUMN category_title TEXT',
+  'ALTER TABLE scraped_records ADD COLUMN sub_type TEXT',
+  'ALTER TABLE scraped_records ADD COLUMN decedent_name TEXT',
+  'ALTER TABLE scraped_records ADD COLUMN ssn_last4 TEXT',
+  'ALTER TABLE scraped_records ADD COLUMN source TEXT'
+];
+
+additionalColumns.forEach(colSql => {
+  try {
+    db.exec(colSql);
+  } catch(e) {
+    // Column already exists
+  }
+});
 
 // Helper: Custom CSV Line Parser that handles quotes
 function parseCSVLine(line: string): string[] {
@@ -577,12 +594,498 @@ app.get("/api/scrape", async (req, res) => {
 
 app.get("/api/records", (req, res) => {
     try {
-        const stmt = db.prepare("SELECT * FROM scraped_records ORDER BY scraped_at DESC LIMIT 100");
+        const stmt = db.prepare("SELECT * FROM scraped_records ORDER BY scraped_at DESC LIMIT 500");
         const rows = stmt.all();
         res.json(rows);
     } catch (error: any) {
         res.status(500).json({ error: "Database error", message: error.message });
     }
+});
+
+// SQLite Statistics Endpoint
+app.get("/api/sqlite/stats", (req, res) => {
+  try {
+    const totalStmt = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as totalValue FROM scraped_records");
+    const totalRes = totalStmt.get() as { count: number; totalValue: number };
+
+    const caStmt = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as totalValue FROM scraped_records WHERE UPPER(state) = 'CA'");
+    const caRes = caStmt.get() as { count: number; totalValue: number };
+
+    const catStmt = db.prepare("SELECT category_id, COUNT(*) as count FROM scraped_records WHERE category_id IS NOT NULL GROUP BY category_id");
+    const catRows = catStmt.all() as { category_id: string; count: number }[];
+
+    const latestStmt = db.prepare("SELECT scraped_at FROM scraped_records ORDER BY scraped_at DESC LIMIT 1");
+    const latestRes = latestStmt.get() as { scraped_at: string } | undefined;
+
+    res.json({
+      success: true,
+      totalRecords: totalRes.count,
+      totalValue: totalRes.totalValue,
+      caRecordsCount: caRes.count,
+      caTotalValue: caRes.totalValue,
+      categoryCounts: catRows,
+      lastUpdated: latestRes ? latestRes.scraped_at : null,
+      dbName: "data.sqlite",
+      status: "Active & Synced"
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Custom SQL Query Studio Endpoint (SELECT queries only for security)
+app.post("/api/sqlite/query", (req, res) => {
+  try {
+    const { sql } = req.body;
+    if (!sql || typeof sql !== "string") {
+      return res.status(400).json({ error: "A valid SQL query string is required." });
+    }
+
+    const trimmedSql = sql.trim();
+    if (!trimmedSql.toUpperCase().startsWith("SELECT") && !trimmedSql.toUpperCase().startsWith("PRAGMA")) {
+      return res.status(400).json({ error: "Only SELECT and PRAGMA read queries are allowed in Custom SQL Studio." });
+    }
+
+    const stmt = db.prepare(trimmedSql);
+    const rows = stmt.all();
+    res.json({
+      success: true,
+      rowCount: rows.length,
+      rows
+    });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+// Direct Insert Record into SQLite
+app.post("/api/sqlite/insert-record", (req, res) => {
+  try {
+    const { 
+      first_name, last_name, state, property_type, amount, 
+      company, location, state_id, category_id, category_title, 
+      sub_type, decedent_name, ssn_last4, source 
+    } = req.body;
+
+    const stmt = db.prepare(`
+      INSERT INTO scraped_records (
+        first_name, last_name, state, property_type, amount, 
+        company, location, state_id, category_id, category_title, 
+        sub_type, decedent_name, ssn_last4, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const info = stmt.run(
+      first_name || "",
+      last_name || "",
+      (state || "CA").toUpperCase(),
+      property_type || "Unclaimed Asset",
+      Number(amount) || 0,
+      company || "Unknown Holder",
+      location || "",
+      state_id || `CA-SQL-${Date.now()}`,
+      category_id ? String(category_id) : "1",
+      category_title || "State Unclaimed Property",
+      sub_type || "Direct Asset Record",
+      decedent_name || null,
+      ssn_last4 || null,
+      source || "CA Asset & 12-Category SQLite Hub"
+    );
+
+    res.json({
+      success: true,
+      insertedId: info.lastInsertRowid,
+      message: "Asset record successfully persisted to SQLite database (data.sqlite)."
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Batch Insert Records into SQLite Database based on 12 Asset Categories
+app.post("/api/sqlite/batch-insert", (req, res) => {
+  try {
+    const { records } = req.body;
+    if (!Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ success: false, error: "An array of records is required for batch insertion." });
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO scraped_records (
+        first_name, last_name, state, property_type, amount, 
+        company, location, state_id, category_id, category_title, 
+        sub_type, decedent_name, ssn_last4, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    let insertedCount = 0;
+    const executeBatch = db.transaction((recs: any[]) => {
+      for (const r of recs) {
+        const catId = r.category_id || r.categoryId || "1";
+        const catTitle = r.category_title || r.categoryTitle || "State Unclaimed Property (NAUPA)";
+        
+        stmt.run(
+          r.first_name || r.firstName || "",
+          r.last_name || r.lastName || "",
+          (r.state || "CA").toUpperCase(),
+          r.property_type || r.propertyType || r.type || "Unclaimed Asset",
+          Number(r.amount) || 0,
+          r.company || r.holder || r.holderCompany || "Unknown Custodian",
+          r.location || r.address || "",
+          r.state_id || r.stateId || `BATCH-SQL-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          String(catId),
+          String(catTitle),
+          r.sub_type || r.subType || r.type || "Batch CSV Import Record",
+          r.decedent_name || r.decedentName || null,
+          r.ssn_last4 || r.ssnLast4 || null,
+          r.source || "Batch CSV Import"
+        );
+        insertedCount++;
+      }
+    });
+
+    executeBatch(records);
+
+    res.json({
+      success: true,
+      insertedCount,
+      message: `Successfully batch inserted ${insertedCount} asset records into SQLite database.`
+    });
+  } catch (error: any) {
+    console.error("Batch insert failed:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Endpoint for CSV File Upload, Parsing & SQLite Deduplication Sync
+app.post("/api/upload-csv", upload.single("file"), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: "No CSV file was attached in the request." });
+    }
+
+    const csvContent = req.file.buffer.toString("utf-8");
+    const lines = csvContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+    if (lines.length === 0) {
+      return res.status(400).json({ success: false, error: "Uploaded CSV file is empty." });
+    }
+
+    const firstLineLower = lines[0].toLowerCase();
+    const hasHeader = firstLineLower.includes("name") || firstLineLower.includes("amount") || firstLineLower.includes("state");
+    const dataLines = hasHeader ? lines.slice(1) : lines;
+
+    const checkExistingStmt = db.prepare(`
+      SELECT id FROM scraped_records 
+      WHERE state_id = ? OR (
+        LOWER(first_name) = LOWER(?) AND 
+        LOWER(last_name) = LOWER(?) AND 
+        UPPER(state) = UPPER(?) AND 
+        amount = ? AND 
+        LOWER(company) = LOWER(?)
+      )
+      LIMIT 1
+    `);
+
+    const insertRecordStmt = db.prepare(`
+      INSERT INTO scraped_records (
+        first_name, last_name, state, property_type, amount,
+        company, location, state_id, category_id, category_title,
+        sub_type, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    let recordsParsed = 0;
+    let recordsInserted = 0;
+    let duplicateCount = 0;
+
+    const parseCSVLine = (line: string): string[] => {
+      const result: string[] = [];
+      let current = "";
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') inQuotes = !inQuotes;
+        else if (char === ',' && !inQuotes) {
+          result.push(current.trim());
+          current = "";
+        } else current += char;
+      }
+      result.push(current.trim());
+      return result;
+    };
+
+    const processBatch = db.transaction((rows: string[]) => {
+      for (let idx = 0; idx < rows.length; idx++) {
+        const line = rows[idx];
+        const cols = parseCSVLine(line);
+        if (cols.length < 2) continue;
+
+        recordsParsed++;
+        const rawName = cols[0] || "Unknown Owner";
+        const parts = rawName.trim().split(/\s+/);
+        const firstName = parts[0] || "Unknown";
+        const lastName = parts.slice(1).join(" ") || "Owner";
+
+        const rawAmt = String(cols[1] || "0").replace(/[\$,]/g, "").trim();
+        const amount = Number(rawAmt) || 0;
+        const state = (cols[2] || "CA").trim().toUpperCase();
+        const propertyType = (cols[3] || "Unclaimed Asset").trim();
+        const company = (cols[4] || "Unknown Custodian").trim();
+        const catId = cols[5] ? cols[5].trim() : "1";
+        const location = cols[6] ? cols[6].trim() : `${state} | ${company}`;
+        const stateId = cols[7] ? cols[7].trim() : `CSV-${Date.now()}-${idx + 1}`;
+
+        const existing = checkExistingStmt.get(stateId, firstName, lastName, state, amount, company);
+
+        if (existing) {
+          duplicateCount++;
+        } else {
+          insertRecordStmt.run(
+            firstName, lastName, state, propertyType, amount,
+            company, location, stateId, String(catId),
+            "State Unclaimed Property (NAUPA)", propertyType, `Uploaded CSV (${req.file?.originalname})`
+          );
+          recordsInserted++;
+        }
+      }
+    });
+
+    processBatch(dataLines);
+
+    res.json({
+      success: true,
+      fileName: req.file.originalname,
+      recordsParsed,
+      recordsInserted,
+      duplicateCount,
+      message: `Successfully processed ${recordsParsed} records (${recordsInserted} inserted, ${duplicateCount} duplicates skipped).`
+    });
+  } catch (error: any) {
+    console.error("CSV Upload endpoint error:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to process CSV file." });
+  }
+});
+
+// Endpoint for ZIP Archive Decompression & SQLite Sync
+app.post("/api/upload-zip", upload.single("file"), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: "No ZIP archive was attached in the request." });
+    }
+
+    const zip = new AdmZip(req.file.buffer);
+    const zipEntries = zip.getEntries();
+
+    let totalFilesProcessed = 0;
+    let recordsParsed = 0;
+    let recordsInserted = 0;
+    let duplicateCount = 0;
+    const fileNames: string[] = [];
+
+    const checkExistingStmt = db.prepare(`
+      SELECT id FROM scraped_records 
+      WHERE state_id = ? OR (
+        LOWER(first_name) = LOWER(?) AND 
+        LOWER(last_name) = LOWER(?) AND 
+        UPPER(state) = UPPER(?) AND 
+        amount = ? AND 
+        LOWER(company) = LOWER(?)
+      )
+      LIMIT 1
+    `);
+
+    const insertRecordStmt = db.prepare(`
+      INSERT INTO scraped_records (
+        first_name, last_name, state, property_type, amount,
+        company, location, state_id, category_id, category_title,
+        sub_type, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const parseCSVLine = (line: string): string[] => {
+      const result: string[] = [];
+      let current = "";
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') inQuotes = !inQuotes;
+        else if (char === ',' && !inQuotes) {
+          result.push(current.trim());
+          current = "";
+        } else current += char;
+      }
+      result.push(current.trim());
+      return result;
+    };
+
+    const processCSVContent = (content: string, filename: string) => {
+      const lines = content.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      if (lines.length === 0) return;
+
+      const firstLineLower = lines[0].toLowerCase();
+      const hasHeader = firstLineLower.includes("name") || firstLineLower.includes("amount") || firstLineLower.includes("state");
+      const dataLines = hasHeader ? lines.slice(1) : lines;
+
+      for (let idx = 0; idx < dataLines.length; idx++) {
+        const line = dataLines[idx];
+        const cols = parseCSVLine(line);
+        if (cols.length < 2) continue;
+
+        recordsParsed++;
+        const rawName = cols[0] || "Unknown Owner";
+        const parts = rawName.trim().split(/\s+/);
+        const firstName = parts[0] || "Unknown";
+        const lastName = parts.slice(1).join(" ") || "Owner";
+
+        const rawAmt = String(cols[1] || "0").replace(/[\$,]/g, "").trim();
+        const amount = Number(rawAmt) || 0;
+        const state = (cols[2] || "CA").trim().toUpperCase();
+        const propertyType = (cols[3] || "Unclaimed Asset").trim();
+        const company = (cols[4] || "Unknown Custodian").trim();
+        const catId = cols[5] ? cols[5].trim() : "1";
+        const location = cols[6] ? cols[6].trim() : `${state} | ${company}`;
+        const stateId = cols[7] ? cols[7].trim() : `ZIP-${Date.now()}-${recordsParsed}`;
+
+        const existing = checkExistingStmt.get(stateId, firstName, lastName, state, amount, company);
+
+        if (existing) {
+          duplicateCount++;
+        } else {
+          insertRecordStmt.run(
+            firstName, lastName, state, propertyType, amount,
+            company, location, stateId, String(catId),
+            "State Unclaimed Property (NAUPA)", propertyType, `ZIP Sync (${filename})`
+          );
+          recordsInserted++;
+        }
+      }
+    };
+
+    const processJSONContent = (content: string, filename: string) => {
+      try {
+        const parsed = JSON.parse(content);
+        const items = Array.isArray(parsed) ? parsed : (parsed.records || parsed.items || [parsed]);
+        for (const r of items) {
+          recordsParsed++;
+          const firstName = r.first_name || r.firstName || r.name?.split(' ')[0] || "Unknown";
+          const lastName = r.last_name || r.lastName || r.name?.split(' ').slice(1).join(' ') || "Owner";
+          const state = (r.state || "CA").toUpperCase();
+          const propertyType = r.property_type || r.propertyType || r.type || "Unclaimed Asset";
+          const amount = Number(r.amount) || 0;
+          const company = r.company || r.holder || "Unknown Custodian";
+          const location = r.location || `${state} | ${company}`;
+          const stateId = r.state_id || r.stateId || `ZIP-JSON-${Date.now()}-${recordsParsed}`;
+          const catId = String(r.category_id || r.categoryId || "1");
+
+          const existing = checkExistingStmt.get(stateId, firstName, lastName, state, amount, company);
+
+          if (existing) {
+            duplicateCount++;
+          } else {
+            insertRecordStmt.run(
+              firstName, lastName, state, propertyType, amount,
+              company, location, stateId, catId,
+              "State Unclaimed Property (NAUPA)", propertyType, `ZIP Sync (${filename})`
+            );
+            recordsInserted++;
+          }
+        }
+      } catch (err) {
+        console.warn(`Failed to parse JSON file ${filename} in ZIP:`, err);
+      }
+    };
+
+    const processZipTransaction = db.transaction(() => {
+      zipEntries.forEach(entry => {
+        if (entry.isDirectory) return;
+        const entryName = entry.entryName;
+        const lowerName = entryName.toLowerCase();
+
+        if (lowerName.endsWith(".csv") || lowerName.endsWith(".txt")) {
+          const content = zip.readAsText(entry);
+          processCSVContent(content, entryName);
+          totalFilesProcessed++;
+          fileNames.push(entryName);
+        } else if (lowerName.endsWith(".json")) {
+          const content = zip.readAsText(entry);
+          processJSONContent(content, entryName);
+          totalFilesProcessed++;
+          fileNames.push(entryName);
+        }
+      });
+    });
+
+    processZipTransaction();
+
+    if (totalFilesProcessed === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "No readable .csv or .json data files were found inside the uploaded ZIP archive."
+      });
+    }
+
+    res.json({
+      success: true,
+      totalFilesProcessed,
+      fileNames,
+      recordsParsed,
+      recordsInserted,
+      duplicateCount,
+      message: `Successfully synchronized ${totalFilesProcessed} file(s) from ZIP archive into SQLite (${recordsInserted} inserted, ${duplicateCount} duplicates skipped).`
+    });
+
+  } catch (error: any) {
+    console.error("ZIP Upload endpoint error:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to process ZIP archive." });
+  }
+});
+
+// Delete Record from SQLite
+app.delete("/api/sqlite/delete-record/:id", (req, res) => {
+  try {
+    const recordId = req.params.id;
+    const stmt = db.prepare("DELETE FROM scraped_records WHERE id = ?");
+    const info = stmt.run(recordId);
+
+    if (info.changes > 0) {
+      res.json({ success: true, message: `Record #${recordId} deleted from SQLite database.` });
+    } else {
+      res.status(404).json({ success: false, error: "Record not found." });
+    }
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Export SQLite database records as JSON / CSV format
+app.get("/api/sqlite/export", (req, res) => {
+  try {
+    const format = req.query.format || "json";
+    const stmt = db.prepare("SELECT * FROM scraped_records ORDER BY id ASC");
+    const rows = stmt.all() as any[];
+
+    if (format === "csv") {
+      if (rows.length === 0) {
+        return res.send("id,first_name,last_name,state,property_type,amount,company,location,state_id,category_id,scraped_at");
+      }
+      const headers = Object.keys(rows[0]).join(",");
+      const csvLines = rows.map(r => 
+        Object.values(r).map(val => `"${String(val ?? '').replace(/"/g, '""')}"`).join(",")
+      );
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", "attachment; filename=ca_assets_sqlite_export.csv");
+      return res.send([headers, ...csvLines].join("\n"));
+    }
+
+    res.json({
+      success: true,
+      totalCount: rows.length,
+      records: rows
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // Endpoint for 12-Field Specialized Asset & Claim Multi-Category Search

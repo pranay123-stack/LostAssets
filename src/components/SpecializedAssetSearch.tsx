@@ -29,7 +29,8 @@ import {
   UserCheck,
   ShieldAlert,
   HelpCircle,
-  X
+  X,
+  Database
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -37,6 +38,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "./ui/
 import { Badge } from "./ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "./ui/dialog";
 import { cn } from "../lib/utils";
+import { insertRecordToBrowserDb, insertBatchToBrowserDb, logSearchToBrowserDb } from "../lib/db";
 
 export interface SpecializedRecord {
   id: string;
@@ -227,6 +229,93 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
   // Modal State for Protocol & Details
   const [activeProtocolRecord, setActiveProtocolRecord] = useState<SpecializedRecord | null>(null);
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
+  const [savedSqliteIds, setSavedSqliteIds] = useState<string[]>([]);
+  const [isSavingSqlite, setIsSavingSqlite] = useState<boolean>(false);
+
+  const saveRecordToSqliteDb = async (record: SpecializedRecord) => {
+    try {
+      const parts = (record.ownerName || "").trim().split(" ");
+      const fName = parts[0] || "";
+      const lName = parts.slice(1).join(" ") || "";
+
+      // Save to in-browser SQLite database (sql.js)
+      await insertRecordToBrowserDb({
+        first_name: fName,
+        last_name: lName,
+        state: record.state,
+        property_type: record.subType,
+        amount: record.amount,
+        company: record.custodianAgency,
+        location: `${record.state} | Agency: ${record.custodianAgency}`,
+        state_id: record.stateIdRef || `SPEC-${record.id}`,
+        category_id: String(record.categoryNumber),
+        category_title: record.categoryTitle,
+        sub_type: record.subType,
+        decedent_name: record.decedentName || null,
+        ssn_last4: record.ssnMatch ? record.ssnMatch.slice(-4) : null,
+        source: record.source || "12-Category Asset Engine"
+      });
+
+      // Save to server endpoint
+      await fetch("/api/sqlite/insert-record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          first_name: fName,
+          last_name: lName,
+          state: record.state,
+          property_type: record.subType,
+          amount: record.amount,
+          company: record.custodianAgency,
+          location: `${record.state} | Agency: ${record.custodianAgency}`,
+          state_id: record.stateIdRef || `SPEC-${record.id}`,
+          category_id: String(record.categoryNumber),
+          category_title: record.categoryTitle,
+          sub_type: record.subType,
+          decedent_name: record.decedentName || null,
+          ssn_last4: record.ssnMatch ? record.ssnMatch.slice(-4) : null,
+          source: record.source || "12-Category Asset Engine"
+        })
+      });
+      return true;
+    } catch (err) {
+      console.error("SQLite insert failed:", err);
+      return false;
+    }
+  };
+
+  const handleSaveSingleToSQLite = async (record: SpecializedRecord) => {
+    const success = await saveRecordToSqliteDb(record);
+    if (success) {
+      setSavedSqliteIds(prev => [...new Set([...prev, record.id])]);
+      setSaveSuccessMessage(`Asset "${record.subType}" ($${record.amount.toLocaleString()}) persisted to local SQLite database!`);
+      setTimeout(() => setSaveSuccessMessage(null), 3500);
+    }
+  };
+
+  const handleSaveSelectedToSQLite = async () => {
+    const selectedList = results.filter(r => selectedRecordIds.includes(r.id));
+    if (selectedList.length === 0) return;
+
+    setIsSavingSqlite(true);
+    let successCount = 0;
+    const newSavedIds: string[] = [];
+
+    for (const item of selectedList) {
+      const ok = await saveRecordToSqliteDb(item);
+      if (ok) {
+        successCount++;
+        newSavedIds.push(item.id);
+      }
+    }
+
+    setIsSavingSqlite(false);
+    if (successCount > 0) {
+      setSavedSqliteIds(prev => [...new Set([...prev, ...newSavedIds])]);
+      setSaveSuccessMessage(`Successfully saved ${successCount} asset records into SQLite database (data.sqlite)!`);
+      setTimeout(() => setSaveSuccessMessage(null), 4000);
+    }
+  };
 
   // Active Category Detail View for intelligence tab
   const [activeDetailCatId, setActiveDetailCatId] = useState<number | null>(1);
@@ -257,6 +346,37 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
       if (data.success && Array.isArray(data.records)) {
         setResults(data.records);
         setSelectedRecordIds(data.records.map((r: SpecializedRecord) => r.id));
+
+        // Save discovered asset records directly into the newly initialized sqlite database using src/lib/db.ts
+        if (data.records.length > 0) {
+          const browserRecords = data.records.map((record: SpecializedRecord) => {
+            const parts = (record.ownerName || "").trim().split(" ");
+            return {
+              first_name: parts[0] || "",
+              last_name: parts.slice(1).join(" ") || "",
+              state: record.state || state,
+              property_type: record.subType,
+              amount: record.amount,
+              company: record.custodianAgency,
+              location: `${record.state} | Agency: ${record.custodianAgency}`,
+              state_id: record.stateIdRef || `SPEC-${record.id}`,
+              category_id: String(record.categoryNumber),
+              category_title: record.categoryTitle,
+              sub_type: record.subType,
+              decedent_name: record.decedentName || null,
+              ssn_last4: record.ssnMatch ? record.ssnMatch.slice(-4) : null,
+              source: record.source || "12-Category Discovered Asset Engine"
+            };
+          });
+
+          await insertBatchToBrowserDb(browserRecords);
+          await logSearchToBrowserDb(
+            ownerName || decedentName || "Specialized Search",
+            selectedCategoryId,
+            data.records.length
+          );
+          setSavedSqliteIds(prev => [...new Set([...prev, ...data.records.map((r: SpecializedRecord) => r.id)])]);
+        }
       }
     } catch (err) {
       console.error("Failed to run specialized search:", err);
@@ -658,6 +778,25 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
                     <FolderPlus className="w-3.5 h-3.5" />
                     Save Selected ({selectedRecordIds.length}) to CRM
                   </Button>
+
+                  <Button
+                    size="sm"
+                    onClick={handleSaveSelectedToSQLite}
+                    disabled={selectedRecordIds.length === 0 || isSavingSqlite}
+                    className="h-8 bg-orange-500 hover:bg-orange-400 text-black font-bold font-mono text-xs flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-40"
+                  >
+                    {isSavingSqlite ? (
+                      <>
+                        <div className="w-3 h-3 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                        Persisting...
+                      </>
+                    ) : (
+                      <>
+                        <Database className="w-3.5 h-3.5" />
+                        Sync to SQLite DB ({selectedRecordIds.length})
+                      </>
+                    )}
+                  </Button>
                 </>
               )}
             </div>
@@ -784,6 +923,22 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
                           >
                             <Info className="w-3 h-3 text-orange-400" />
                             Recovery Guide
+                          </Button>
+
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={savedSqliteIds.includes(rec.id)}
+                            onClick={() => handleSaveSingleToSQLite(rec)}
+                            className={cn(
+                              "h-7 px-2.5 font-mono text-[10px] flex items-center gap-1 cursor-pointer transition-all",
+                              savedSqliteIds.includes(rec.id)
+                                ? "bg-emerald-950/40 text-emerald-400 border-emerald-800"
+                                : "border-neutral-800 bg-neutral-900 hover:bg-neutral-800 text-orange-300"
+                            )}
+                          >
+                            <Database className="w-3 h-3" />
+                            {savedSqliteIds.includes(rec.id) ? "Saved in SQLite" : "Save to SQLite"}
                           </Button>
 
                           <Button

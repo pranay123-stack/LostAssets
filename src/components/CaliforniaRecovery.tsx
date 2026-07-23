@@ -4,7 +4,7 @@ import {
   PhoneCall, Send, Clock, Plus, Trash2, Edit3, Save, BookOpen, 
   ExternalLink, Award, Building2, ShieldAlert, CheckCircle2, Search,
   ChevronRight, Calendar, AlertTriangle, FileText, Share2, DollarSign,
-  UserCheck, AlertCircle, Sparkles, MapPin
+  UserCheck, AlertCircle, Sparkles, MapPin, Database
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
@@ -89,6 +89,52 @@ export function CaliforniaRecovery() {
   // CRM Leads List State
   const [crmLeads, setCrmLeads] = useState<CACRMLead[]>([]);
   const [selectedLead, setSelectedLead] = useState<CACRMLead | null>(null);
+
+  // SQLite Seed State
+  const [isSeedingSqlite, setIsSeedingSqlite] = useState(false);
+  const [sqliteSeedSuccess, setSqliteSeedSuccess] = useState<string | null>(null);
+
+  const handleSeedCaDataToSqlite = async () => {
+    setIsSeedingSqlite(true);
+    let count = 0;
+    const allItems = [
+      ...CALIFORNIA_MOCK_DATA.individual.map(item => ({ ...item, catId: "1", catTitle: "State Unclaimed Property" })),
+      ...CALIFORNIA_MOCK_DATA.estate.map(item => ({ ...item, catId: "12", catTitle: "Probate & Heir Custody" })),
+      ...CALIFORNIA_MOCK_DATA.business.map(item => ({ ...item, catId: "1", catTitle: "Corporate Commercial Property" }))
+    ];
+
+    for (const item of allItems) {
+      try {
+        const parts = item.name.split(" ");
+        const fName = parts[0] || "";
+        const lName = parts.slice(1).join(" ") || "";
+        await fetch("/api/sqlite/insert-record", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            first_name: fName,
+            last_name: lName,
+            state: "CA",
+            property_type: item.type,
+            amount: item.amount,
+            company: item.holder,
+            location: `${item.address || ''}, ${item.county || ''} County, CA`,
+            state_id: item.sourceId || item.id,
+            category_id: item.catId,
+            category_title: item.catTitle,
+            sub_type: item.type,
+            source: "California Controller Unclaimed Property Registry"
+          })
+        });
+        count++;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    setIsSeedingSqlite(false);
+    setSqliteSeedSuccess(`Successfully seeded ${count} California Unclaimed Property records directly into local SQLite database (data.sqlite)!`);
+    setTimeout(() => setSqliteSeedSuccess(null), 4000);
+  };
 
   // Lead Modal / Edit Forms
   const [newNote, setNewNote] = useState("");
@@ -320,34 +366,64 @@ export function CaliforniaRecovery() {
           <p className="text-neutral-400 text-sm">Official Controller asset extraction registry & CRM suite</p>
         </div>
 
-        <div className="flex bg-neutral-900 rounded-lg p-1 border border-neutral-800 self-stretch sm:self-auto">
-          <button 
-            onClick={() => setCaTab("search")}
-            className={cn(
-              "px-4 py-2 text-sm font-medium rounded-md transition-all flex items-center space-x-2",
-              caTab === "search" ? "bg-orange-500 text-black font-semibold shadow-md" : "text-neutral-400 hover:text-neutral-200"
-            )}
+        <div className="flex flex-wrap items-center gap-2 self-stretch sm:self-auto">
+          <Button
+            size="sm"
+            onClick={handleSeedCaDataToSqlite}
+            disabled={isSeedingSqlite}
+            className="bg-neutral-900 hover:bg-neutral-800 text-orange-400 border border-orange-500/30 font-mono text-xs flex items-center gap-1.5 h-9"
           >
-            <Search className="w-4 h-4" />
-            <span>Claim Search</span>
-          </button>
-          <button 
-            onClick={() => setCaTab("crm")}
-            className={cn(
-              "px-4 py-2 text-sm font-medium rounded-md transition-all flex items-center space-x-2 relative",
-              caTab === "crm" ? "bg-orange-500 text-black font-semibold shadow-md" : "text-neutral-400 hover:text-neutral-200"
+            {isSeedingSqlite ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-orange-400 border-t-transparent rounded-full animate-spin" />
+                Seeding SQLite...
+              </>
+            ) : (
+              <>
+                <Database className="w-3.5 h-3.5 text-orange-400" />
+                Seed CA Assets to SQLite DB
+              </>
             )}
-          >
-            <Briefcase className="w-4 h-4" />
-            <span>Recovery CRM</span>
-            {crmLeads.length > 0 && (
-              <Badge className="bg-orange-950 text-orange-300 border border-orange-500/30 text-[10px] px-1.5 py-0.5 ml-1 animate-pulse">
-                {crmLeads.length}
-              </Badge>
-            )}
-          </button>
+          </Button>
+
+          <div className="flex bg-neutral-900 rounded-lg p-1 border border-neutral-800">
+            <button 
+              onClick={() => setCaTab("search")}
+              className={cn(
+                "px-4 py-2 text-sm font-medium rounded-md transition-all flex items-center space-x-2 cursor-pointer",
+                caTab === "search" ? "bg-orange-500 text-black font-semibold shadow-md" : "text-neutral-400 hover:text-neutral-200"
+              )}
+            >
+              <Search className="w-4 h-4" />
+              <span>Claim Search</span>
+            </button>
+            <button 
+              onClick={() => setCaTab("crm")}
+              className={cn(
+                "px-4 py-2 text-sm font-medium rounded-md transition-all flex items-center space-x-2 relative cursor-pointer",
+                caTab === "crm" ? "bg-orange-500 text-black font-semibold shadow-md" : "text-neutral-400 hover:text-neutral-200"
+              )}
+            >
+              <Briefcase className="w-4 h-4" />
+              <span>Recovery CRM</span>
+              {crmLeads.length > 0 && (
+                <Badge className="bg-orange-950 text-orange-300 border border-orange-500/30 text-[10px] px-1.5 py-0.5 ml-1 animate-pulse">
+                  {crmLeads.length}
+                </Badge>
+              )}
+            </button>
+          </div>
         </div>
       </div>
+
+      {sqliteSeedSuccess && (
+        <div className="bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-mono p-3 rounded-xl flex items-center justify-between animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{sqliteSeedSuccess}</span>
+          </div>
+        </div>
+      )}
 
       {caTab === "search" ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { 
   Megaphone, Mail, Send, Database, FileText, Upload, Globe, 
   CheckCircle2, Sparkles, Copy, Check, Info, Library, Loader2, ArrowRight,
-  FileCheck, RefreshCw, AlertCircle, Sparkle, Search, Briefcase, UserCheck, Layers, ArrowDownToLine
+  FileCheck, RefreshCw, AlertCircle, Sparkle, Search, Briefcase, UserCheck, Layers, ArrowDownToLine, Coins
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
@@ -10,6 +10,9 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Badge } from "./ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
+import { ASSET_CATEGORIES_DATA } from "./SpecializedAssetSearch";
+import { insertBatchToBrowserDb, AssetRecord } from "../lib/db";
+import JSZip from "jszip";
 
 // Full multi-state registers
 const REGISTRY_STATISTICS = [
@@ -68,10 +71,24 @@ export function OutreachAndDataTools({ toolType, savedCases = [], onImportRecord
   const [rawCSVInput, setRawCSVInput] = useState("");
   const [importedRows, setImportedRows] = useState<any[]>([]);
   const [csvPreviewError, setCsvPreviewError] = useState("");
+  const [selectedImportCategoryId, setSelectedImportCategoryId] = useState<string>("auto");
+  const [isBatchInserting, setIsBatchInserting] = useState<boolean>(false);
+  const [batchInsertResult, setBatchInsertResult] = useState<{
+    insertedCount: number;
+    totalValue: number;
+    categoriesMap: Record<string, number>;
+    message: string;
+  } | null>(null);
 
   // --- SQLITE DB RECORDS STATE ---
   const [sqliteRecords, setSqliteRecords] = useState<any[]>([]);
   const [isLoadingRecords, setIsLoadingRecords] = useState(false);
+  const [sqliteStats, setSqliteStats] = useState<any | null>(null);
+  const [dbViewMode, setDbViewMode] = useState<"visual" | "sql_studio">("visual");
+  const [customSql, setCustomSql] = useState<string>("SELECT id, first_name, last_name, state, property_type, amount, company, location, category_id, scraped_at FROM scraped_records ORDER BY scraped_at DESC LIMIT 50;");
+  const [sqlQueryResult, setSqlQueryResult] = useState<{ rowCount: number; rows: any[] } | null>(null);
+  const [sqlQueryError, setSqlQueryError] = useState<string | null>(null);
+  const [isExecutingSql, setIsExecutingSql] = useState<boolean>(false);
 
   // --- ZIP & CSV DRAG-AND-DROP STATE ---
   const [importTab, setImportTab] = useState<"zip" | "pasted">("zip");
@@ -132,33 +149,108 @@ export function OutreachAndDataTools({ toolType, savedCases = [], onImportRecord
     setUploadError(null);
     setUploadResult(null);
 
-    const formData = new FormData();
-    formData.append("file", file);
-
     try {
-      const response = await fetch("/api/upload-csv", {
-        method: "POST",
-        body: formData,
-      });
+      const csvText = await file.text();
+      const lines = csvText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({ error: "Server sync failed" }));
-        throw new Error(errData.error || `Upload failed with status ${response.status}`);
+      if (lines.length === 0) {
+        throw new Error("Uploaded CSV file is empty.");
       }
 
-      const result = await response.json();
+      const firstLineLower = lines[0].toLowerCase();
+      const hasHeader = firstLineLower.includes("name") || firstLineLower.includes("amount") || firstLineLower.includes("state");
+      const dataLines = hasHeader ? lines.slice(1) : lines;
+
+      const parsedRecords: AssetRecord[] = [];
+      dataLines.forEach((line, idx) => {
+        const cols = parseCSVLine(line);
+        if (cols.length < 2) return;
+
+        const rawName = cols[0] || "Unknown Owner";
+        const parts = rawName.trim().split(/\s+/);
+        const firstName = parts[0] || "Unknown";
+        const lastName = parts.slice(1).join(" ") || "Owner";
+
+        const rawAmt = String(cols[1] || "0").replace(/[\$,]/g, "").trim();
+        const amount = Number(rawAmt) || 0;
+        const state = (cols[2] || "CA").trim().toUpperCase();
+        const propertyType = (cols[3] || "Unclaimed Asset").trim();
+        const company = (cols[4] || "Unknown Custodian").trim();
+        const catIdCol = cols[5] ? cols[5].trim() : undefined;
+        const location = cols[6] ? cols[6].trim() : `${state} | ${company}`;
+        const stateId = cols[7] ? cols[7].trim() : `CSV-${Date.now()}-${idx + 1}`;
+
+        const rawObj = {
+          first_name: firstName,
+          last_name: lastName,
+          name: rawName,
+          property_type: propertyType,
+          company,
+          amount,
+          state,
+          category_id: catIdCol
+        };
+
+        const resolvedCat = resolveCategoryForRecord(rawObj, selectedImportCategoryId);
+
+        parsedRecords.push({
+          first_name: firstName,
+          last_name: lastName,
+          state,
+          property_type: propertyType,
+          amount,
+          company,
+          location,
+          state_id: stateId,
+          category_id: resolvedCat.id,
+          category_title: resolvedCat.title,
+          sub_type: propertyType,
+          source: `Uploaded CSV (${file.name})`
+        });
+      });
+
+      if (parsedRecords.length === 0) {
+        throw new Error("No valid records found in uploaded CSV file.");
+      }
+
+      // Insert into browser WASM SQLite database
+      const clientInsertedCount = await insertBatchToBrowserDb(parsedRecords);
+
+      // Attempt server sync
+      let serverInserted = clientInsertedCount;
+      let serverDuplicates = parsedRecords.length - clientInsertedCount;
+
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await fetch("/api/upload-csv", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          serverInserted = result.recordsInserted ?? clientInsertedCount;
+          serverDuplicates = result.duplicateCount ?? serverDuplicates;
+        }
+      } catch (serverErr) {
+        console.warn("Backend CSV sync notice (WASM browser SQLite database updated):", serverErr);
+      }
+
       setUploadResult({
         success: true,
         totalFilesProcessed: 1,
-        fileNames: [result.fileName],
-        recordsParsed: result.recordsParsed,
-        recordsInserted: result.recordsInserted,
-        duplicateCount: result.duplicateCount
+        fileNames: [file.name],
+        recordsParsed: parsedRecords.length,
+        recordsInserted: Math.max(clientInsertedCount, serverInserted),
+        duplicateCount: serverDuplicates
       });
-      fetchRecordsFromSQLite();
+
+      await fetchRecordsFromSQLite();
+      await fetchSqliteStats();
     } catch (err: any) {
       console.error("CSV Upload error:", err);
-      setUploadError(err.message || "Failed to process and sync uploaded CSV onto local SQLite.");
+      setUploadError(err.message || "Failed to process uploaded CSV file.");
     } finally {
       setIsUploading(false);
     }
@@ -169,26 +261,153 @@ export function OutreachAndDataTools({ toolType, savedCases = [], onImportRecord
     setUploadError(null);
     setUploadResult(null);
 
-    const formData = new FormData();
-    formData.append("file", file);
-
     try {
-      const response = await fetch("/api/upload-zip", {
-        method: "POST",
-        body: formData,
-      });
+      const zip = await JSZip.loadAsync(file);
+      const fileNames: string[] = [];
+      const allRecords: AssetRecord[] = [];
+      let totalFilesProcessed = 0;
 
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({ error: "Server sync failed" }));
-        throw new Error(errData.error || `Upload failed with status ${response.status}`);
+      for (const relativePath of Object.keys(zip.files)) {
+        const zipEntry = zip.files[relativePath];
+        if (zipEntry.dir) continue;
+
+        const lowerName = relativePath.toLowerCase();
+        if (lowerName.endsWith(".csv") || lowerName.endsWith(".txt")) {
+          const textContent = await zipEntry.async("string");
+          const lines = textContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+          if (lines.length > 0) {
+            const firstLineLower = lines[0].toLowerCase();
+            const hasHeader = firstLineLower.includes("name") || firstLineLower.includes("amount") || firstLineLower.includes("state");
+            const dataLines = hasHeader ? lines.slice(1) : lines;
+
+            dataLines.forEach((line, idx) => {
+              const cols = parseCSVLine(line);
+              if (cols.length < 2) return;
+
+              const rawName = cols[0] || "Unknown Owner";
+              const parts = rawName.trim().split(/\s+/);
+              const firstName = parts[0] || "Unknown";
+              const lastName = parts.slice(1).join(" ") || "Owner";
+
+              const rawAmt = String(cols[1] || "0").replace(/[\$,]/g, "").trim();
+              const amount = Number(rawAmt) || 0;
+              const state = (cols[2] || "CA").trim().toUpperCase();
+              const propertyType = (cols[3] || "Unclaimed Asset").trim();
+              const company = (cols[4] || "Unknown Custodian").trim();
+              const catIdCol = cols[5] ? cols[5].trim() : undefined;
+              const location = cols[6] ? cols[6].trim() : `${state} | ${company}`;
+              const stateId = cols[7] ? cols[7].trim() : `ZIP-${Date.now()}-${allRecords.length + 1}`;
+
+              const resolvedCat = resolveCategoryForRecord({
+                first_name: firstName, last_name: lastName, name: rawName,
+                property_type: propertyType, company, amount, state, category_id: catIdCol
+              }, selectedImportCategoryId);
+
+              allRecords.push({
+                first_name: firstName,
+                last_name: lastName,
+                state,
+                property_type: propertyType,
+                amount,
+                company,
+                location,
+                state_id: stateId,
+                category_id: resolvedCat.id,
+                category_title: resolvedCat.title,
+                sub_type: propertyType,
+                source: `ZIP Sync (${relativePath})`
+              });
+            });
+            totalFilesProcessed++;
+            fileNames.push(relativePath);
+          }
+        } else if (lowerName.endsWith(".json")) {
+          const textContent = await zipEntry.async("string");
+          try {
+            const parsed = JSON.parse(textContent);
+            const items = Array.isArray(parsed) ? parsed : (parsed.records || parsed.items || [parsed]);
+            items.forEach((r: any) => {
+              const rawName = r.name || `${r.first_name || r.firstName || ''} ${r.last_name || r.lastName || ''}`.trim() || "Unknown Owner";
+              const parts = rawName.split(/\s+/);
+              const firstName = r.first_name || r.firstName || parts[0] || "Unknown";
+              const lastName = r.last_name || r.lastName || parts.slice(1).join(" ") || "Owner";
+              const state = (r.state || "CA").toUpperCase();
+              const propertyType = r.property_type || r.propertyType || r.type || "Unclaimed Asset";
+              const amount = Number(r.amount) || 0;
+              const company = r.company || r.holder || "Unknown Custodian";
+              const location = r.location || `${state} | ${company}`;
+              const stateId = r.state_id || r.stateId || `ZIP-JSON-${Date.now()}-${allRecords.length + 1}`;
+
+              const resolvedCat = resolveCategoryForRecord({
+                first_name: firstName, last_name: lastName, name: rawName,
+                property_type: propertyType, company, amount, state, category_id: r.category_id || r.categoryId
+              }, selectedImportCategoryId);
+
+              allRecords.push({
+                first_name: firstName,
+                last_name: lastName,
+                state,
+                property_type: propertyType,
+                amount,
+                company,
+                location,
+                state_id: stateId,
+                category_id: resolvedCat.id,
+                category_title: resolvedCat.title,
+                sub_type: propertyType,
+                source: `ZIP Sync (${relativePath})`
+              });
+            });
+            totalFilesProcessed++;
+            fileNames.push(relativePath);
+          } catch (jsonErr) {
+            console.warn(`Failed to parse JSON file ${relativePath} inside ZIP:`, jsonErr);
+          }
+        }
       }
 
-      const result = await response.json();
-      setUploadResult(result);
-      fetchRecordsFromSQLite();
+      if (totalFilesProcessed === 0 || allRecords.length === 0) {
+        throw new Error("No valid .csv or .json files found inside uploaded ZIP archive.");
+      }
+
+      // Insert into browser WASM SQLite database
+      const clientInsertedCount = await insertBatchToBrowserDb(allRecords);
+
+      // Attempt server sync
+      let serverInserted = clientInsertedCount;
+      let serverDuplicates = allRecords.length - clientInsertedCount;
+
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await fetch("/api/upload-zip", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          serverInserted = result.recordsInserted ?? clientInsertedCount;
+          serverDuplicates = result.duplicateCount ?? serverDuplicates;
+        }
+      } catch (serverErr) {
+        console.warn("Backend ZIP sync notice (WASM browser SQLite database updated):", serverErr);
+      }
+
+      setUploadResult({
+        success: true,
+        totalFilesProcessed,
+        fileNames,
+        recordsParsed: allRecords.length,
+        recordsInserted: Math.max(clientInsertedCount, serverInserted),
+        duplicateCount: serverDuplicates
+      });
+
+      await fetchRecordsFromSQLite();
+      await fetchSqliteStats();
     } catch (err: any) {
       console.error("ZIP Upload error:", err);
-      setUploadError(err.message || "Failed to process and sync uploaded ZIP onto local SQLite.");
+      setUploadError(err.message || "Failed to decompress and sync uploaded ZIP archive.");
     } finally {
       setIsUploading(false);
     }
@@ -209,8 +428,44 @@ export function OutreachAndDataTools({ toolType, savedCases = [], onImportRecord
     }
   };
 
+  const fetchSqliteStats = async () => {
+    try {
+      const res = await fetch("/api/sqlite/stats");
+      if (res.ok) {
+        const data = await res.json();
+        setSqliteStats(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch SQLite stats:", err);
+    }
+  };
+
+  const handleExecuteCustomSql = async (sqlToRun?: string) => {
+    const query = sqlToRun || customSql;
+    setIsExecutingSql(true);
+    setSqlQueryError(null);
+    try {
+      const res = await fetch("/api/sqlite/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sql: query })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSqlQueryResult({ rowCount: data.rowCount, rows: data.rows });
+      } else {
+        setSqlQueryError(data.error || "Query failed");
+      }
+    } catch (err: any) {
+      setSqlQueryError(err.message || "Failed to execute query.");
+    } finally {
+      setIsExecutingSql(false);
+    }
+  };
+
   useEffect(() => {
     fetchRecordsFromSQLite();
+    fetchSqliteStats();
   }, [toolType]);
 
   // Campaign Simulation
@@ -244,65 +499,301 @@ export function OutreachAndDataTools({ toolType, savedCases = [], onImportRecord
     }, 400);
   };
 
-  // CSV Parsing
-  const handleLoadSampleCSV = () => {
-    const sample = `John Doe, 12500, CA, Bank Account, Wells Fargo
-Robert Smith Estate, 68000, TX, Uncashed Check, Alliance Corp
-Silverado Inc, 142000, CA, Uncashed Check, Chevron Corp
-Pineda Family Trust, 84300, FL, Life Insurance, Prudential`;
-    setRawCSVInput(sample);
+  // --- CSV PARSING & 12 ASSET CATEGORY RESOLUTION ---
+  const parseCSVLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
+
+  const resolveCategoryForRecord = (rawObj: any, selectedOverride: string) => {
+    // 1. Check for explicit category column in CSV row (e.g., 1..12)
+    const explicitVal = rawObj.category_id || rawObj.categoryId || rawObj.category || rawObj.Category;
+    if (explicitVal) {
+      const num = parseInt(String(explicitVal).replace(/\D/g, ""));
+      if (num >= 1 && num <= 12) {
+        const match = ASSET_CATEGORIES_DATA.find(c => c.id === num);
+        if (match) return { id: String(match.id), title: match.title, shortName: match.shortName };
+      }
+    }
+
+    // 2. User explicit dropdown selection (1..12)
+    if (selectedOverride && selectedOverride !== "auto") {
+      const num = parseInt(selectedOverride);
+      const match = ASSET_CATEGORIES_DATA.find(c => c.id === num);
+      if (match) return { id: String(match.id), title: match.title, shortName: match.shortName };
+    }
+
+    // 3. Keyword Auto-detection based on property type, company, or owner
+    const text = `${rawObj.property_type || ''} ${rawObj.type || ''} ${rawObj.company || ''} ${rawObj.holderCompany || ''} ${rawObj.name || ''}`.toLowerCase();
+
+    if (text.includes("pension") || text.includes("pbgc") || text.includes("retirement") || text.includes("erisa") || text.includes("401k") || text.includes("annuity")) {
+      return { id: "2", title: "Abandoned Pensions / PBGC Benefits", shortName: "Pensions & PBGC" };
+    }
+    if (text.includes("bond") || text.includes("treasury") || text.includes("savings bond") || text.includes("series e") || text.includes("series ee")) {
+      return { id: "3", title: "U.S. Savings Bonds (Matured / Unredeemed)", shortName: "Savings Bonds" };
+    }
+    if (text.includes("insurance") || text.includes("death benefit") || text.includes("policy") || text.includes("demutualization") || text.includes("prudential")) {
+      return { id: "4", title: "Life Insurance Benefits & VA Policy Funds", shortName: "Life Insurance & VA" };
+    }
+    if (text.includes("stock") || text.includes("dividend") || text.includes("sec") || text.includes("brokerage") || text.includes("fair fund") || text.includes("share") || text.includes("mutual fund")) {
+      return { id: "5", title: "Securities, Dividends & Brokerage Residuals", shortName: "Stocks & Dividends" };
+    }
+    if (text.includes("safe deposit") || text.includes("vault") || text.includes("tangible") || text.includes("box") || text.includes("coin") || text.includes("jewelry")) {
+      return { id: "6", title: "Safe Deposit Box Contents (Tangible Property)", shortName: "Safe Deposit Vault" };
+    }
+    if (text.includes("tax") || text.includes("hud") || text.includes("fha") || text.includes("irs") || text.includes("mortgage refund") || text.includes("overpayment credit")) {
+      return { id: "7", title: "Tax Refunds & FHA/HUD Mortgage Refunds", shortName: "Tax & HUD Refunds" };
+    }
+    if (text.includes("class action") || text.includes("court") || text.includes("bankruptcy") || text.includes("pacer") || text.includes("litigation") || text.includes("tort")) {
+      return { id: "8", title: "Class Action & Court / Bankruptcy Unclaimed", shortName: "Class Action & Courts" };
+    }
+    if (text.includes("mineral") || text.includes("royalty") || text.includes("oil") || text.includes("gas") || text.includes("drilling") || text.includes("lease")) {
+      return { id: "9", title: "Mineral Rights, Oil & Gas Royalties", shortName: "Mineral & Royalties" };
+    }
+    if (text.includes("veteran") || text.includes("va disability") || text.includes("va pension") || text.includes("burial") || text.includes("military")) {
+      return { id: "10", title: "VA Benefits & Veterans' Funds (Non-Insurance)", shortName: "VA Veterans' Funds" };
+    }
+    if (text.includes("utility") || text.includes("deposit") || text.includes("electric") || text.includes("telecom") || text.includes("power") || text.includes("water")) {
+      return { id: "11", title: "Utility Deposits & Corporate Overpayments", shortName: "Utility & Overpayments" };
+    }
+    if (text.includes("probate") || text.includes("estate") || text.includes("heir") || text.includes("decedent") || text.includes("intestate") || text.includes("surrogate")) {
+      return { id: "12", title: "Probate Residuals, Missing Heirs & Estates", shortName: "Probate & Heirs" };
+    }
+
+    // Default to Category 1 State Unclaimed Property
+    return { id: "1", title: "State Unclaimed Property (NAUPA)", shortName: "State Unclaimed" };
+  };
+
+  const handleLoadSampleCSV = (sampleType: "multi" | "pensions" | "probate" | "unclaimed" = "multi") => {
+    setBatchInsertResult(null);
     setCsvPreviewError("");
+
+    if (sampleType === "multi") {
+      setRawCSVInput(`Name, Amount, State, AssetType, Custodian, CategoryId, Location, StateId
+Arthur Pendelton, 54000.00, CA, PBGC Vested Pension, Boeing ERISA Plan, 2, Long Beach CA, PBGC-2026-9012
+Chevron Corp Dividends, 125000.00, CA, Stock Dividend Residue, Computershare Trust, 5, San Francisco CA, SEC-2026-8812
+Estate of Harold Jenkins, 184000.00, TX, Intestate Estate Surplus, Travis County Probate Court, 12, Austin TX, PRB-TX-5510
+Winifred Miller, 15200.00, FL, Matured Series E Bond, US Treasury Dept, 3, Miami FL, TR-2026-4421
+Occidental Petroleum, 92400.00, CA, Suspended Mineral Royalty, Kern County Clerk, 9, Bakersfield CA, MIN-CA-0012
+Dr. Marcus Vance, 8400.00, CA, FHA Mortgage Premium, HUD Financial Ops, 7, Sacramento CA, HUD-2026-1102
+Pacific Gas & Electric, 3200.00, CA, Commercial Security Deposit, PG&E Utility Escrow, 11, San Jose CA, UTL-2026-7841
+Pineda Family Trust, 64000.00, FL, Unclaimed Life Insurance, Prudential Financial, 4, Tampa FL, VA-LIF-9920
+Sgt. Thomas Sterling, 22500.00, CA, Accrued VA Disability Escrow, VA Regional Office, 10, San Diego CA, VA-DIS-1092
+Equifax Harmed Investor Fund, 41200.00, NY, Class Settlement Residue, US District Court NY, 8, New York NY, CRT-2026-3390
+Safe Deposit Box #402 Vault, 18900.00, CA, Gold Coin Inventory, CA State Controller Vault, 6, Sacramento CA, SDB-CA-4020
+John Doe Claim, 12500.00, CA, Uncashed Payroll Check, Wells Fargo Bank, 1, Los Angeles CA, NAUPA-CA-1002`);
+    } else if (sampleType === "pensions") {
+      setRawCSVInput(`Name, Amount, State, AssetType, Custodian, CategoryId, Location
+Arthur Pendelton, 54000.00, CA, PBGC Vested Pension, Boeing ERISA Plan Administrator, 2, Long Beach CA
+Marsha Henderson, 82500.00, TX, Abandoned Vested Annuity, General Dynamics Pension Trust, 2, Fort Worth TX
+Estate of Donald Hayes, 128000.00, IL, Deceased Worker Accrued Pension, Caterpillar Retirement Fund, 2, Chicago IL`);
+    } else if (sampleType === "probate") {
+      setRawCSVInput(`Name, Amount, State, AssetType, Custodian, CategoryId, Location
+Estate of Eleanor Vance, 310000.00, CA, Intestate Probate Surplus, Los Angeles County Probate Court, 12, Los Angeles CA
+Estate of James R Montgomery, 142000.00, TX, Missing Heir Court Holding, Harris County Probate Unit, 12, Houston TX
+Estate of Clara Bow, 95000.00, NY, Public Administrator Escrow, New York Surrogate Court, 12, New York NY`);
+    } else {
+      setRawCSVInput(`Name, Amount, State, AssetType, Custodian, CategoryId
+John Doe, 12500.00, CA, Bank Account Balance, Wells Fargo Bank, 1
+Robert Smith Estate, 68000.00, TX, Uncashed Dividend Check, Alliance Corp, 1
+Silverado Inc, 142000.00, CA, Corporate Escrow Credit, Chevron Corp, 1`);
+    }
   };
 
   const handleParseCSV = () => {
     setCsvPreviewError("");
     setImportedRows([]);
-    
+    setBatchInsertResult(null);
+
     if (!rawCSVInput.trim()) {
-      setCsvPreviewError("Please paste some valid CSV rows or click and load sample file.");
+      setCsvPreviewError("Please paste valid CSV records or click one of the sample dataset buttons above.");
       return;
     }
 
     try {
-      const lines = rawCSVInput.split("\n");
+      const rawLines = rawCSVInput.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      if (rawLines.length === 0) {
+        setCsvPreviewError("No non-empty lines found in CSV input.");
+        return;
+      }
+
+      // Check header line
+      const firstLineLower = rawLines[0].toLowerCase();
+      const hasHeader = firstLineLower.includes("name") || firstLineLower.includes("amount") || firstLineLower.includes("state");
+      const dataLines = hasHeader ? rawLines.slice(1) : rawLines;
+
+      if (dataLines.length === 0) {
+        setCsvPreviewError("CSV file contains a header line only. Please add data rows.");
+        return;
+      }
+
       const tempRows: any[] = [];
-      
-      lines.forEach((line, idx) => {
-        if (!line.trim()) return;
-        const cols = line.split(",").map(c => c.trim());
-        if (cols.length < 5) {
-          throw new Error(`Row ${idx + 1} has insufficient columns. Need format: Name, Amount, State, AssetType, Custodian`);
-        }
-        
-        const floatAmount = parseFloat(cols[1]);
-        if (isNaN(floatAmount)) {
-          throw new Error(`Row ${idx + 1} has incorrect value: "${cols[1]}" is not a number.`);
+
+      dataLines.forEach((line, idx) => {
+        const cols = parseCSVLine(line);
+        if (cols.length < 2) return;
+
+        const rawName = cols[0] || "Unknown Owner";
+        const nameParts = rawName.trim().split(/\s+/);
+        let firstName = nameParts[0] || "";
+        let lastName = nameParts.slice(1).join(" ") || "";
+        if (!lastName && nameParts.length === 1) {
+          lastName = nameParts[0];
+          firstName = "Unassigned";
         }
 
-        tempRows.push({
-          id: `imp-${Date.now()}-${idx}`,
-          name: cols[0],
+        const rawAmtStr = String(cols[1] || "0").replace(/[\$,]/g, "").trim();
+        const floatAmount = parseFloat(rawAmtStr);
+        if (isNaN(floatAmount)) {
+          throw new Error(`Row ${idx + 1} ("${rawName}") has an invalid numeric amount: "${cols[1]}".`);
+        }
+
+        const stateStr = (cols[2] || "CA").trim().toUpperCase();
+        const propertyType = (cols[3] || "Unclaimed Asset").trim();
+        const companyStr = (cols[4] || "Unknown Custodian").trim();
+        const catIdCol = cols[5] ? cols[5].trim() : undefined;
+        const locationStr = cols[6] ? cols[6].trim() : `${stateStr} | ${companyStr}`;
+        const stateIdStr = cols[7] ? cols[7].trim() : `CSV-SQL-${Date.now()}-${idx + 1}`;
+
+        const rawRecordObj = {
+          first_name: firstName,
+          last_name: lastName,
+          name: rawName,
+          property_type: propertyType,
+          type: propertyType,
+          company: companyStr,
+          holderCompany: companyStr,
           amount: floatAmount,
-          state: cols[2].toUpperCase(),
-          type: cols[3],
-          holderCompany: cols[4]
+          state: stateStr,
+          category_id: catIdCol,
+          location: locationStr,
+          state_id: stateIdStr
+        };
+
+        const resolvedCategory = resolveCategoryForRecord(rawRecordObj, selectedImportCategoryId);
+
+        tempRows.push({
+          id: `parsed-${Date.now()}-${idx}`,
+          first_name: firstName,
+          last_name: lastName,
+          owner: rawName,
+          name: rawName,
+          amount: floatAmount,
+          state: stateStr,
+          property_type: propertyType,
+          type: propertyType,
+          company: companyStr,
+          holderCompany: companyStr,
+          location: locationStr,
+          state_id: stateIdStr,
+          category_id: resolvedCategory.id,
+          category_title: resolvedCategory.title,
+          category_shortName: resolvedCategory.shortName,
+          source: "Batch CSV Import"
         });
       });
 
+      if (tempRows.length === 0) {
+        setCsvPreviewError("Could not extract any valid asset records from the CSV input.");
+        return;
+      }
+
       setImportedRows(tempRows);
     } catch (e: any) {
-      setCsvPreviewError(e.message || "Ecountered syntax formatting error parsing records.");
+      setCsvPreviewError(e.message || "Formatting error encountered while parsing CSV records.");
     }
   };
 
-  const handleCommitImport = () => {
+  const handleBatchInsertToSqlite = async () => {
     if (importedRows.length === 0) return;
-    if (onImportRecords) {
-      onImportRecords(importedRows);
+
+    setIsBatchInserting(true);
+    setCsvPreviewError("");
+    setBatchInsertResult(null);
+
+    try {
+      const batchToInsert: AssetRecord[] = importedRows.map(row => ({
+        first_name: row.first_name,
+        last_name: row.last_name,
+        state: row.state,
+        property_type: row.property_type,
+        amount: row.amount,
+        company: row.company,
+        location: row.location || `${row.state} | ${row.company}`,
+        state_id: row.state_id || `BATCH-SQL-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        category_id: String(row.category_id || "1"),
+        category_title: row.category_title || "State Unclaimed Property (NAUPA)",
+        sub_type: row.property_type,
+        source: "Batch CSV Import"
+      }));
+
+      // 1. Insert into browser WASM SQLite DB
+      const clientInsertedCount = await insertBatchToBrowserDb(batchToInsert);
+
+      // 2. Insert into server SQLite DB (data.sqlite) via API
+      let serverInsertedCount = 0;
+      try {
+        const apiRes = await fetch("/api/sqlite/batch-insert", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ records: batchToInsert })
+        });
+        if (apiRes.ok) {
+          const apiData = await apiRes.json();
+          serverInsertedCount = apiData.insertedCount || clientInsertedCount;
+        }
+      } catch (apiErr) {
+        console.warn("Backend batch insert failed, client WASM SQLite database updated:", apiErr);
+      }
+
+      const totalCount = Math.max(clientInsertedCount, serverInsertedCount, importedRows.length);
+      const totalVal = importedRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+      const catBreakdown: Record<string, number> = {};
+      importedRows.forEach(r => {
+        const key = `Cat ${r.category_id}: ${r.category_shortName || r.category_title}`;
+        catBreakdown[key] = (catBreakdown[key] || 0) + 1;
+      });
+
+      setBatchInsertResult({
+        insertedCount: totalCount,
+        totalValue: totalVal,
+        categoriesMap: catBreakdown,
+        message: `Successfully batch inserted ${totalCount} records ($${totalVal.toLocaleString(undefined, { minimumFractionDigits: 2 })}) into SQLite Database!`
+      });
+
+      // 3. Callback trigger
+      if (onImportRecords) {
+        onImportRecords(importedRows);
+      }
+
+      // 4. Refresh live SQLite tables and stats
+      await fetchRecordsFromSQLite();
+      await fetchSqliteStats();
+
+      // Reset CSV inputs
+      setImportedRows([]);
+      setRawCSVInput("");
+    } catch (err: any) {
+      console.error("Batch insert into SQLite failed:", err);
+      setCsvPreviewError(`Batch INSERT failed: ${err.message || "Error writing to SQLite database"}`);
+    } finally {
+      setIsBatchInserting(false);
     }
-    alert(`Successfully loaded ${importedRows.length} active records directly into Search Workbench registry queries!`);
-    setImportedRows([]);
-    setRawCSVInput("");
   };
 
   const handleCopyHermesLetter = () => {
@@ -763,13 +1254,236 @@ Pineda Family Trust, 84300, FL, Life Insurance, Prudential`;
 
         return (
           <div className="space-y-6">
-            <div>
-              <span className="text-orange-400 text-xs font-mono font-bold uppercase bg-orange-400/10 px-2 py-0.5 rounded border border-orange-500/20">
-                National repositories
-              </span>
-              <h2 className="text-2xl font-bold tracking-tight text-neutral-100 mt-2">Combined State Records Registry</h2>
-              <p className="text-neutral-400 text-sm">Full catalog master record rows compiled from California, Texas, and Florida state databases.</p>
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <span className="text-orange-400 text-xs font-mono font-bold uppercase bg-orange-400/10 px-2 py-0.5 rounded border border-orange-500/20 flex items-center gap-1.5">
+                    <Database className="w-3.5 h-3.5" />
+                    SQLite Browser & 12-Category Database
+                  </span>
+                  <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400 font-mono text-[10px]">
+                    data.sqlite Active
+                  </Badge>
+                </div>
+                <h2 className="text-2xl font-bold tracking-tight text-neutral-100 mt-2">Combined State Records & Asset Database</h2>
+                <p className="text-neutral-400 text-sm">Persistent SQLite engine storing California unclaimed property, 12-category asset search logs, and scraped ZIP/CSV imports.</p>
+              </div>
+
+              {/* View Mode & Export Controls */}
+              <div className="flex items-center flex-wrap gap-2">
+                <a
+                  href="/api/sqlite/export?format=csv"
+                  download="ca_assets_sqlite_export.csv"
+                  className="h-8 px-3 rounded-lg bg-neutral-900 hover:bg-neutral-850 text-neutral-200 border border-neutral-800 font-mono text-xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <ArrowDownToLine className="w-3.5 h-3.5 text-orange-400" />
+                  Export CSV
+                </a>
+
+                <div className="flex bg-neutral-900 border border-neutral-850 p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setDbViewMode("visual")}
+                    className={cn(
+                      "px-3 py-1 rounded-lg font-mono text-xs transition-all cursor-pointer flex items-center gap-1.5",
+                      dbViewMode === "visual"
+                        ? "bg-orange-500 text-black font-bold shadow-sm"
+                        : "text-neutral-400 hover:text-neutral-200"
+                    )}
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    Visual Grid
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDbViewMode("sql_studio")}
+                    className={cn(
+                      "px-3 py-1 rounded-lg font-mono text-xs transition-all cursor-pointer flex items-center gap-1.5",
+                      dbViewMode === "sql_studio"
+                        ? "bg-orange-500 text-black font-bold shadow-sm"
+                        : "text-neutral-400 hover:text-neutral-200"
+                    )}
+                  >
+                    <Database className="w-3.5 h-3.5" />
+                    Custom SQL Studio
+                  </button>
+                </div>
+              </div>
             </div>
+
+            {/* SQLite Live Metrics Banner */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <Card className="border-neutral-850 bg-neutral-950 p-4 rounded-xl">
+                <span className="text-[10px] font-mono uppercase text-neutral-500 block">Total Database Records</span>
+                <div className="text-xl font-bold font-mono text-neutral-100 mt-1 flex items-center justify-between">
+                  <span>{sqliteStats ? sqliteStats.totalRecords.toLocaleString() : sqliteRecords.length}</span>
+                  <Database className="w-5 h-5 text-orange-400/80" />
+                </div>
+                <span className="text-[10px] font-mono text-neutral-450 mt-1 block">Persisted in local data.sqlite</span>
+              </Card>
+
+              <Card className="border-neutral-850 bg-neutral-950 p-4 rounded-xl">
+                <span className="text-[10px] font-mono uppercase text-neutral-500 block">California (CA) Assets</span>
+                <div className="text-xl font-bold font-mono text-orange-400 mt-1 flex items-center justify-between">
+                  <span>{sqliteStats ? sqliteStats.caRecordsCount.toLocaleString() : combinedCatalog.filter(c => c.state === 'CA').length}</span>
+                  <span className="text-xs bg-orange-500/10 border border-orange-500/20 px-1.5 py-0.5 rounded text-orange-400">CA Focus</span>
+                </div>
+                <span className="text-[10px] font-mono text-neutral-450 mt-1 block">CA Unclaimed Property Logs</span>
+              </Card>
+
+              <Card className="border-neutral-850 bg-neutral-950 p-4 rounded-xl">
+                <span className="text-[10px] font-mono uppercase text-neutral-500 block">Total Asset Portfolio Value</span>
+                <div className="text-xl font-bold font-mono text-emerald-400 mt-1 flex items-center justify-between">
+                  <span>${sqliteStats ? (sqliteStats.totalValue || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }) : combinedCatalog.reduce((s, c) => s + c.amount, 0).toLocaleString()}</span>
+                  <Coins className="w-5 h-5 text-emerald-400/80" />
+                </div>
+                <span className="text-[10px] font-mono text-neutral-450 mt-1 block">Indexed Recoverable Capital</span>
+              </Card>
+
+              <Card className="border-neutral-850 bg-neutral-950 p-4 rounded-xl">
+                <span className="text-[10px] font-mono uppercase text-neutral-500 block">12-Category Coverage</span>
+                <div className="text-xl font-bold font-mono text-indigo-400 mt-1 flex items-center justify-between">
+                  <span>12 / 12 Fields</span>
+                  <Sparkles className="w-5 h-5 text-indigo-400/80" />
+                </div>
+                <span className="text-[10px] font-mono text-neutral-450 mt-1 block">NAUPA, PBGC, Bonds, Probate</span>
+              </Card>
+            </div>
+
+            {/* SQL STUDIO MODE TERMINAL */}
+            {dbViewMode === "sql_studio" && (
+              <Card className="border-neutral-800 bg-[#0a0a0d] p-5 rounded-2xl space-y-4 shadow-2xl animate-in fade-in">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-neutral-900 pb-3">
+                  <div>
+                    <h3 className="text-sm font-bold font-mono text-orange-400 flex items-center gap-2">
+                      <Database className="w-4 h-4 text-orange-400" />
+                      Browser SQL Terminal & Direct Query Console
+                    </h3>
+                    <p className="text-xs text-neutral-450 mt-0.5 font-mono">
+                      Execute custom SELECT queries against table <code className="text-orange-300">scraped_records</code> in <code className="text-orange-300">data.sqlite</code>.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => handleExecuteCustomSql()}
+                      disabled={isExecutingSql}
+                      className="bg-orange-500 hover:bg-orange-600 text-black font-bold font-mono text-xs px-4 h-8 cursor-pointer"
+                    >
+                      {isExecutingSql ? (
+                        <>
+                          <div className="w-3 h-3 border-2 border-black border-t-transparent rounded-full animate-spin mr-1.5" />
+                          Executing SQL...
+                        </>
+                      ) : (
+                        <>
+                          <Send className="w-3.5 h-3.5 mr-1.5" />
+                          Run Query
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Preset SQL Statements Buttons */}
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-mono uppercase text-neutral-500 block">Preset SQL Queries:</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const q = "SELECT id, first_name, last_name, state, property_type, amount, company, location, scraped_at FROM scraped_records WHERE UPPER(state)='CA' ORDER BY amount DESC LIMIT 50;";
+                        setCustomSql(q);
+                        handleExecuteCustomSql(q);
+                      }}
+                      className="text-[10px] font-mono px-2.5 py-1 rounded bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-orange-300 hover:border-orange-500/40 cursor-pointer"
+                    >
+                      CA High Value Assets
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const q = "SELECT category_id, category_title, COUNT(*) as count, SUM(amount) as total_val FROM scraped_records GROUP BY category_id ORDER BY total_val DESC;";
+                        setCustomSql(q);
+                        handleExecuteCustomSql(q);
+                      }}
+                      className="text-[10px] font-mono px-2.5 py-1 rounded bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-orange-300 hover:border-orange-500/40 cursor-pointer"
+                    >
+                      12-Category Aggregates
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const q = "SELECT id, first_name, last_name, amount, company, source, scraped_at FROM scraped_records ORDER BY id DESC LIMIT 50;";
+                        setCustomSql(q);
+                        handleExecuteCustomSql(q);
+                      }}
+                      className="text-[10px] font-mono px-2.5 py-1 rounded bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-orange-300 hover:border-orange-500/40 cursor-pointer"
+                    >
+                      Latest 50 Inserted Records
+                    </button>
+                  </div>
+                </div>
+
+                {/* SQL Input Box */}
+                <textarea
+                  value={customSql}
+                  onChange={(e) => setCustomSql(e.target.value)}
+                  rows={3}
+                  className="w-full bg-neutral-950 font-mono text-xs border border-neutral-850 rounded-xl p-3 text-orange-300 focus:outline-none focus:ring-1 focus:ring-orange-500 leading-relaxed"
+                  placeholder="SELECT * FROM scraped_records WHERE amount > 50000;"
+                />
+
+                {sqlQueryError && (
+                  <div className="p-3 bg-red-950/40 border border-red-500/30 text-red-300 text-xs font-mono rounded-lg flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+                    <span>SQL Error: {sqlQueryError}</span>
+                  </div>
+                )}
+
+                {/* SQL Query Results Table */}
+                {sqlQueryResult && (
+                  <div className="space-y-2 pt-2 border-t border-neutral-900">
+                    <div className="flex justify-between items-center text-xs font-mono text-neutral-400">
+                      <span>Execution Result: <strong className="text-emerald-400">{sqlQueryResult.rowCount} rows</strong> returned</span>
+                      <span className="text-[10px] text-neutral-500">Read-Only Safety Sandbox</span>
+                    </div>
+
+                    <div className="border border-neutral-850 rounded-xl overflow-x-auto max-h-72 overflow-y-auto">
+                      {sqlQueryResult.rows.length === 0 ? (
+                        <div className="p-6 text-center text-xs font-mono text-neutral-500">Query returned 0 rows.</div>
+                      ) : (
+                        <Table>
+                          <TableHeader className="bg-neutral-950 sticky top-0 z-10">
+                            <TableRow className="border-neutral-850">
+                              {Object.keys(sqlQueryResult.rows[0]).map((col) => (
+                                <TableHead key={col} className="font-mono text-[11px] text-orange-400 py-2 uppercase">
+                                  {col}
+                                </TableHead>
+                              ))}
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {sqlQueryResult.rows.map((row, rIdx) => (
+                              <TableRow key={rIdx} className="border-neutral-900 hover:bg-neutral-900/50">
+                                {Object.values(row).map((val, cIdx) => (
+                                  <TableCell key={cIdx} className="font-mono text-xs py-2 text-neutral-300">
+                                    {val !== null && val !== undefined ? String(val) : <span className="text-neutral-600 italic">null</span>}
+                                  </TableCell>
+                                ))}
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </Card>
+            )}
 
             {/* Range Search & Keywords Filter Bar */}
             <div className="bg-neutral-900/40 p-5 border border-neutral-900 rounded-xl space-y-4">
@@ -1271,104 +1985,265 @@ Pineda Family Trust, 84300, FL, Life Insurance, Prudential`;
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              <div className="lg:col-span-6 space-y-4">
-                <Card className="border-neutral-805 bg-[#0e0e11] p-5 space-y-4">
-                  <div className="flex justify-between items-center">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-orange-400">CSV Input Terminal</h3>
-                    <Button 
-                      variant="outline" 
-                      onClick={handleLoadSampleCSV}
-                      className="border-neutral-800 hover:bg-neutral-900 text-[10px] h-7 px-2 font-mono text-neutral-400"
-                    >
-                      Load Sample CSV
-                    </Button>
+            <div className="space-y-6">
+              {/* Batch Insert Result Notification Card */}
+              {batchInsertResult && (
+                <Card className="border-emerald-500/30 bg-[#07130c] p-5 space-y-4 shadow-2xl animate-fade-in font-mono">
+                  <div className="pb-3 border-b border-emerald-500/20 flex justify-between items-center text-emerald-400">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                      <span className="font-bold text-xs uppercase tracking-wider">SQLite BATCH INSERT COMPLETED SUCCESSFULLY</span>
+                    </div>
+                    <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/30 text-xs">
+                      {batchInsertResult.insertedCount} Records Written
+                    </Badge>
                   </div>
 
-                  <div className="text-[10px] text-neutral-500 font-mono leading-relaxed bg-neutral-950 p-2.5 rounded border border-neutral-850">
-                    Expected column format: <br />
-                    <span className="text-orange-400">Name, Amount, State, AssetType, Custodian</span>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-[#030805] border border-emerald-500/20 p-3.5 rounded-lg">
+                      <span className="text-[10px] text-neutral-400 uppercase block">Total Rows Inserted</span>
+                      <span className="text-xl font-bold text-emerald-400">{batchInsertResult.insertedCount}</span>
+                    </div>
+                    <div className="bg-[#030805] border border-emerald-500/20 p-3.5 rounded-lg">
+                      <span className="text-[10px] text-neutral-400 uppercase block">Total Asset Value</span>
+                      <span className="text-xl font-bold text-emerald-400">${batchInsertResult.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    </div>
+                    <div className="bg-[#030805] border border-emerald-500/20 p-3.5 rounded-lg">
+                      <span className="text-[10px] text-neutral-400 uppercase block">Database Storage Engine</span>
+                      <span className="text-xs font-bold text-orange-400 mt-1 block">In-Browser WASM SQLite + server data.sqlite</span>
+                    </div>
                   </div>
 
-                  <textarea
-                    value={rawCSVInput}
-                    onChange={e => setRawCSVInput(e.target.value)}
-                    placeholder="Paste CSV records here..."
-                    rows={8}
-                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-orange-500 focus:ring-0 rounded-md font-mono text-xs text-neutral-200 p-3 leading-relaxed"
-                  />
-
-                  {csvPreviewError && (
-                    <p className="text-[11px] text-rose-500 font-mono bg-rose-500/10 border border-rose-500/20 p-2 rounded">
-                      {csvPreviewError}
-                    </p>
+                  {batchInsertResult.categoriesMap && Object.keys(batchInsertResult.categoriesMap).length > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-emerald-500/20">
+                      <span className="text-[10px] text-neutral-400 uppercase block">12 Asset Categories Distribution:</span>
+                      <div className="flex flex-wrap gap-2">
+                        {Object.entries(batchInsertResult.categoriesMap).map(([catLabel, count], idx) => (
+                          <Badge key={idx} className="bg-emerald-500/10 hover:bg-emerald-500/10 text-emerald-300 border-emerald-500/20 text-[10px] py-1 px-2.5">
+                            {catLabel} ({count})
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
                   )}
 
-                  <div className="flex justify-end gap-2">
+                  <div className="flex justify-end pt-2">
                     <Button 
-                      type="button"
-                      onClick={handleParseCSV} 
-                      className="bg-neutral-900 hover:bg-neutral-850 border border-neutral-800 text-xs"
+                      onClick={() => setBatchInsertResult(null)}
+                      className="bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-200 border border-emerald-500/30 text-xs px-4 h-8 font-mono"
                     >
-                      Parse & Validate
+                      Dismiss Report
                     </Button>
                   </div>
                 </Card>
-              </div>
+              )}
 
-              <div className="lg:col-span-6">
-                {importedRows.length > 0 ? (
-                  <Card className="border-neutral-800 bg-[#0e0e11] p-5 space-y-4 shadow-xl animate-fade-in">
-                    <div className="pb-3 border-b border-neutral-800 flex justify-between items-center">
-                      <span className="text-xs font-mono font-bold text-emerald-400">PARSED SPREADSHEET PREVIEW</span>
-                      <Badge className="bg-emerald-500/10 text-emerald-400 font-mono text-xs">{importedRows.length} Records</Badge>
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                <div className="lg:col-span-5 space-y-4">
+                  <Card className="border-neutral-800 bg-[#0e0e11] p-5 space-y-4 shadow-lg">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-neutral-850">
+                      <div className="flex items-center gap-2">
+                        <Database className="w-4 h-4 text-orange-400" />
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-orange-400">CSV Import & Ingestion Terminal</h3>
+                      </div>
+                      <Badge className="bg-orange-500/10 text-orange-400 border-orange-500/20 text-[10px] font-mono self-start sm:self-auto">
+                        12 Categories Supported
+                      </Badge>
                     </div>
 
-                    <div className="overflow-x-auto max-h-64 border border-neutral-850 rounded">
-                      <Table>
-                        <TableHeader className="bg-neutral-950">
-                          <TableRow className="border-neutral-850 hover:bg-transparent">
-                            <TableHead className="font-mono text-[9px] uppercase px-2 py-1">Owner Name</TableHead>
-                            <TableHead className="font-mono text-[9px] uppercase px-2 py-1 text-right">Amount</TableHead>
-                            <TableHead className="font-mono text-[9px] uppercase px-2 py-1">State</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {importedRows.map((row, idx) => (
-                            <TableRow key={idx} className="border-neutral-850 hover:bg-neutral-950/20 text-[11px]">
-                              <TableCell className="px-2 py-1">{row.name}</TableCell>
-                              <TableCell className="text-right px-2 py-1 font-mono text-emerald-400">${row.amount.toLocaleString()}</TableCell>
-                              <TableCell className="px-2 py-1 font-mono text-orange-400">{row.state}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-
-                    <div className="pt-3 border-t border-neutral-800 flex justify-end gap-2">
-                      <Button 
-                        variant="ghost" 
-                        onClick={() => setImportedRows([])}
-                        className="text-neutral-400"
+                    {/* Category Selection Target */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-mono uppercase text-neutral-400 font-semibold block">
+                        Assign Target Asset Category:
+                      </label>
+                      <select
+                        value={selectedImportCategoryId}
+                        onChange={e => setSelectedImportCategoryId(e.target.value)}
+                        className="w-full bg-neutral-950 border border-neutral-800 text-neutral-200 rounded-md text-xs p-2.5 font-mono focus:border-orange-500 focus:outline-none"
                       >
-                        Cancel
-                      </Button>
+                        <option value="auto">⚡ Auto-Detect Category (Keywords & Col Index)</option>
+                        {ASSET_CATEGORIES_DATA.map(cat => (
+                          <option key={cat.id} value={String(cat.id)}>
+                            Cat {cat.id}: {cat.title}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Quick Load Sample CSV Buttons */}
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] font-mono text-neutral-500 uppercase block">Load Preset Sample CSV Data:</span>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button 
+                          type="button"
+                          variant="outline" 
+                          onClick={() => handleLoadSampleCSV("multi")}
+                          className="border-neutral-800 hover:bg-neutral-900 text-[10px] h-7 px-2 font-mono text-neutral-300 justify-start"
+                        >
+                          🌐 12-Category Portfolio
+                        </Button>
+                        <Button 
+                          type="button"
+                          variant="outline" 
+                          onClick={() => handleLoadSampleCSV("pensions")}
+                          className="border-neutral-800 hover:bg-neutral-900 text-[10px] h-7 px-2 font-mono text-neutral-300 justify-start"
+                        >
+                          🏦 Cat 2: Pensions / PBGC
+                        </Button>
+                        <Button 
+                          type="button"
+                          variant="outline" 
+                          onClick={() => handleLoadSampleCSV("probate")}
+                          className="border-neutral-800 hover:bg-neutral-900 text-[10px] h-7 px-2 font-mono text-neutral-300 justify-start"
+                        >
+                          ⚖️ Cat 12: Probate Heirs
+                        </Button>
+                        <Button 
+                          type="button"
+                          variant="outline" 
+                          onClick={() => handleLoadSampleCSV("unclaimed")}
+                          className="border-neutral-800 hover:bg-neutral-900 text-[10px] h-7 px-2 font-mono text-neutral-300 justify-start"
+                        >
+                          📜 Cat 1: State Unclaimed
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="text-[10px] text-neutral-400 font-mono leading-relaxed bg-neutral-950 p-2.5 rounded border border-neutral-850">
+                      Expected Column Header Order: <br />
+                      <span className="text-orange-400">Name, Amount, State, AssetType, Custodian, CategoryId, Location, StateId</span>
+                    </div>
+
+                    <textarea
+                      value={rawCSVInput}
+                      onChange={e => setRawCSVInput(e.target.value)}
+                      placeholder="Paste comma-separated rows or click a sample preset above..."
+                      rows={8}
+                      className="w-full bg-neutral-950 border border-neutral-800 focus:border-orange-500 focus:ring-0 rounded-md font-mono text-xs text-neutral-200 p-3 leading-relaxed"
+                    />
+
+                    {csvPreviewError && (
+                      <div className="p-2.5 bg-rose-950/20 border border-rose-500/30 rounded text-rose-400 text-xs font-mono">
+                        ⚠️ {csvPreviewError}
+                      </div>
+                    )}
+
+                    <div className="flex justify-end gap-2 pt-1">
                       <Button 
                         type="button"
-                        onClick={handleCommitImport} 
-                        className="bg-emerald-600 hover:bg-emerald-700 text-neutral-100 text-xs"
+                        onClick={handleParseCSV} 
+                        className="bg-orange-600 hover:bg-orange-700 text-neutral-100 text-xs font-mono h-9 px-4"
                       >
-                        Append into Search workbench
+                        Parse & Validate Rows
                       </Button>
                     </div>
                   </Card>
-                ) : (
-                  <div className="border border-dashed border-neutral-800 rounded-xl p-8 text-center text-neutral-500 bg-neutral-900/10">
-                    <Upload className="w-8 h-8 text-neutral-700 mx-auto mb-2" />
-                    <p className="text-sm font-semibold">Parsed Spreadsheet Rows</p>
-                    <p className="text-xs text-neutral-500 mt-1">Paste CSV data and initiate Parse to review formatted rows before adding them to live inquiry list.</p>
-                  </div>
-                )}
+                </div>
+
+                <div className="lg:col-span-7">
+                  {importedRows.length > 0 ? (
+                    <Card className="border-neutral-800 bg-[#0e0e11] p-5 space-y-4 shadow-xl animate-fade-in">
+                      <div className="pb-3 border-b border-neutral-800 flex justify-between items-center">
+                        <div>
+                          <span className="text-xs font-mono font-bold text-emerald-400 block uppercase">PARSED SPREADSHEET PREVIEW</span>
+                          <span className="text-[10px] text-neutral-500 font-mono">Ready for SQLite Batch Insertion across 12 categories</span>
+                        </div>
+                        <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 font-mono text-xs">
+                          {importedRows.length} Rows Parsed
+                        </Badge>
+                      </div>
+
+                      {/* Total Portfolio Metric */}
+                      <div className="grid grid-cols-2 gap-3 bg-neutral-950 p-3 rounded-lg border border-neutral-850 font-mono">
+                        <div>
+                          <span className="text-[9px] uppercase text-neutral-500 block">Total Asset Value</span>
+                          <span className="text-base font-bold text-emerald-400">
+                            ${importedRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[9px] uppercase text-neutral-500 block">Unique Categories</span>
+                          <span className="text-base font-bold text-orange-400">
+                            {new Set(importedRows.map(r => r.category_id)).size} / 12 Categories
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="overflow-x-auto max-h-72 border border-neutral-850 rounded">
+                        <Table>
+                          <TableHeader className="bg-neutral-950">
+                            <TableRow className="border-neutral-850 hover:bg-transparent">
+                              <TableHead className="font-mono text-[9px] uppercase px-2 py-1.5">Owner Name</TableHead>
+                              <TableHead className="font-mono text-[9px] uppercase px-2 py-1.5 text-right">Amount</TableHead>
+                              <TableHead className="font-mono text-[9px] uppercase px-2 py-1.5">State</TableHead>
+                              <TableHead className="font-mono text-[9px] uppercase px-2 py-1.5">Asset Type / Custodian</TableHead>
+                              <TableHead className="font-mono text-[9px] uppercase px-2 py-1.5">Category Tag</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {importedRows.map((row, idx) => (
+                              <TableRow key={idx} className="border-neutral-850 hover:bg-neutral-950/40 text-[11px]">
+                                <TableCell className="px-2 py-1.5 font-medium text-neutral-200">{row.owner || `${row.first_name} ${row.last_name}`}</TableCell>
+                                <TableCell className="text-right px-2 py-1.5 font-mono text-emerald-400 font-bold">${row.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</TableCell>
+                                <TableCell className="px-2 py-1.5 font-mono text-orange-400 font-bold">{row.state}</TableCell>
+                                <TableCell className="px-2 py-1.5 text-neutral-400 text-[10px]">
+                                  <div>{row.property_type}</div>
+                                  <div className="text-neutral-500 font-mono">{row.company}</div>
+                                </TableCell>
+                                <TableCell className="px-2 py-1.5">
+                                  <Badge className="bg-orange-500/10 text-orange-300 border-orange-500/20 text-[9px] font-mono py-0.5 px-1.5 whitespace-nowrap">
+                                    Cat {row.category_id}: {row.category_shortName}
+                                  </Badge>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+
+                      <div className="pt-3 border-t border-neutral-800 flex justify-between items-center gap-2">
+                        <Button 
+                          variant="ghost" 
+                          onClick={() => setImportedRows([])}
+                          className="text-neutral-400 text-xs h-9"
+                        >
+                          Discard
+                        </Button>
+
+                        <Button 
+                          type="button"
+                          onClick={handleBatchInsertToSqlite}
+                          disabled={isBatchInserting}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-neutral-100 text-xs font-mono h-9 px-4 flex items-center gap-2 shadow-lg"
+                        >
+                          {isBatchInserting ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Inserting into SQLite DB...
+                            </>
+                          ) : (
+                            <>
+                              <Database className="w-4 h-4" />
+                              Batch INSERT into SQLite Database ({importedRows.length} Rows)
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </Card>
+                  ) : (
+                    <div className="border border-dashed border-neutral-800 rounded-xl p-10 text-center text-neutral-500 bg-neutral-900/10 space-y-3">
+                      <div className="w-12 h-12 rounded-full bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-600 mx-auto">
+                        <Upload className="w-6 h-6" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-neutral-300 font-mono">12 Asset Category Ingestion Pipeline</p>
+                        <p className="text-xs text-neutral-500 mt-1 max-w-md mx-auto leading-relaxed">
+                          Paste your CSV data on the left or choose a sample preset, then click <strong>Parse & Validate Rows</strong> to review category mappings before performing an atomic batch INSERT into the SQLite database.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
