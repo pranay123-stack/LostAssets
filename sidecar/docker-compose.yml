@@ -1,0 +1,18 @@
+services:
+  spacetimedb:
+    image: clockworklabs/spacetime:latest
+    command: ["start", "--listen-addr", "0.0.0.0:3000"]
+    ports:
+      # Loopback only: never publish the real-time control plane to the LAN.
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - spacetimedb_data:/stdb
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  spacetimedb_data:
+    name: la-plus-spacetimedb-data

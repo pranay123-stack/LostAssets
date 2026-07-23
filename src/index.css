@@ -172,5 +172,20 @@
     }
   html {
     @apply font-sans;
+    font-size: 17px;
     }
+}
+
+/* Readability-first operating view: keep dense data usable without requiring
+   browser zoom.  Desktop receives the larger scale where the app has room. */
+@media (min-width: 768px) {
+  html {
+    font-size: 18px;
+  }
+}
+
+@media (min-width: 1536px) {
+  html {
+    font-size: 19px;
+  }
 }

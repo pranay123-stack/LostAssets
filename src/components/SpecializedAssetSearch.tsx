@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { 
   Building2, 
   Landmark, 
@@ -38,7 +38,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "./ui/
 import { Badge } from "./ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "./ui/dialog";
 import { cn } from "../lib/utils";
-import { insertRecordToBrowserDb, insertBatchToBrowserDb, logSearchToBrowserDb } from "../lib/db";
+import { insertRecordToBrowserDb } from "../lib/db";
 
 export interface SpecializedRecord {
   id: string;
@@ -210,6 +210,8 @@ export const ASSET_CATEGORIES_DATA = [
 
 export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: SpecializedAssetSearchProps) {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>("all");
+  const [searchPurpose, setSearchPurpose] = useState<"presearch" | "verified_case">("presearch");
+  const [paperworkVerified, setPaperworkVerified] = useState(false);
   const [ownerName, setOwnerName] = useState<string>("Thomson Diggs");
   const [decedentName, setDecedentName] = useState<string>("");
   const [state, setState] = useState<string>("CA");
@@ -223,6 +225,11 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
 
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [results, setResults] = useState<SpecializedRecord[]>([]);
+  const [searchMessage, setSearchMessage] = useState<string>("");
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [hasSearched, setHasSearched] = useState<boolean>(false);
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
 
@@ -322,8 +329,21 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
 
   const handleExecuteSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (isSearching) return;
+    if (searchPurpose === "verified_case" && !paperworkVerified) {
+      setHasSearched(true);
+      setResults([]);
+      setSearchMessage("Verified case search is locked until an operator confirms the required authority and paperwork have been reviewed.");
+      return;
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setIsSearching(true);
     setResults([]);
+    setSearchMessage("");
+    setCategoryCounts({});
+    setElapsedSeconds(0);
+    timerRef.current = setInterval(() => setElapsedSeconds(seconds => seconds + 1), 1000);
 
     try {
       const response = await fetch("/api/specialized-search", {
@@ -339,51 +359,41 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
           minAmount: parseFloat(minAmount) || 0,
           catParam1,
           catParam2
-        })
+        }),
+        signal: controller.signal
       });
 
       const data = await response.json();
       if (data.success && Array.isArray(data.records)) {
         setResults(data.records);
         setSelectedRecordIds(data.records.map((r: SpecializedRecord) => r.id));
-
-        // Save discovered asset records directly into the newly initialized sqlite database using src/lib/db.ts
-        if (data.records.length > 0) {
-          const browserRecords = data.records.map((record: SpecializedRecord) => {
-            const parts = (record.ownerName || "").trim().split(" ");
-            return {
-              first_name: parts[0] || "",
-              last_name: parts.slice(1).join(" ") || "",
-              state: record.state || state,
-              property_type: record.subType,
-              amount: record.amount,
-              company: record.custodianAgency,
-              location: `${record.state} | Agency: ${record.custodianAgency}`,
-              state_id: record.stateIdRef || `SPEC-${record.id}`,
-              category_id: String(record.categoryNumber),
-              category_title: record.categoryTitle,
-              sub_type: record.subType,
-              decedent_name: record.decedentName || null,
-              ssn_last4: record.ssnMatch ? record.ssnMatch.slice(-4) : null,
-              source: record.source || "12-Category Discovered Asset Engine"
-            };
-          });
-
-          await insertBatchToBrowserDb(browserRecords);
-          await logSearchToBrowserDb(
-            ownerName || decedentName || "Specialized Search",
-            selectedCategoryId,
-            data.records.length
-          );
-          setSavedSqliteIds(prev => [...new Set([...prev, ...data.records.map((r: SpecializedRecord) => r.id)])]);
-        }
+        setCategoryCounts(data.categoryCounts || {});
+        setSearchMessage(searchPurpose === "presearch"
+          ? `${data.message || "Search complete."} Pre-search results are estimates and leads, not a claim determination.`
+          : data.message || "Verified case search complete.");
+      } else {
+        setSearchMessage(data.message || "The search could not be completed.");
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
       console.error("Failed to run specialized search:", err);
+      setSearchMessage("The local search service is unavailable. Please try again.");
     } finally {
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = null;
+      abortControllerRef.current = null;
       setIsSearching(false);
       setHasSearched(true);
     }
+  };
+
+  const handleStopSearch = () => {
+    abortControllerRef.current?.abort();
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
+    abortControllerRef.current = null;
+    setIsSearching(false);
+    setSearchMessage("Search stopped. No results were saved.");
   };
 
   const handleSaveSelectedToCRM = () => {
@@ -391,16 +401,18 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
     if (selectedList.length === 0) return;
 
     const totalVal = selectedList.reduce((sum, r) => sum + r.amount, 0);
-    const catName = selectedCategoryId === "all" 
-      ? `12-Field Multi-Category Leads (${selectedList.length})` 
-      : `${selectedList[0]?.categoryTitle || 'Specialized Claim'} Folder`;
+    const batchDate = new Date().toISOString().slice(0, 10);
+    const categoryLabel = selectedCategoryId === "all"
+      ? "Verified local search"
+      : selectedList[0]?.categoryTitle || "Specialized claim";
+    const catName = `${ownerName.trim() || "Unknown owner"} · ${state} · ${categoryLabel} · ${batchDate}`;
 
     const newCase = {
       id: `SPEC-CRM-${Date.now().toString(36).toUpperCase()}`,
       categoryName: catName,
       status: "Lead",
       createdAt: new Date().toISOString(),
-      notes: `Specialized 12-Field Search import for target ${ownerName}. Total claim value: $${totalVal.toLocaleString()}`,
+      notes: `Verified local-index batch: ${selectedList.length} record${selectedList.length === 1 ? "" : "s"}; target ${ownerName}; jurisdiction ${state}; total $${totalVal.toLocaleString()}.`,
       assets: selectedList.map(item => ({
         description: `[Category ${item.categoryNumber}] ${item.subType} - Ref: ${item.stateIdRef || 'N/A'} (${item.custodianAgency})`,
         amount: item.amount,
@@ -500,6 +512,21 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
         </div>
 
         <form onSubmit={handleExecuteSearch} className="space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-xl border border-neutral-850 bg-neutral-900/30 p-3">
+            <button type="button" onClick={() => setSearchPurpose("presearch")} className={cn("text-left rounded-lg border p-3 transition-colors", searchPurpose === "presearch" ? "border-orange-500/50 bg-orange-500/10" : "border-neutral-800 bg-neutral-950/40")}>
+              <div className="text-xs font-semibold text-neutral-100">Pre-search estimate</div>
+              <p className="text-[11px] text-neutral-500 mt-1">Use basic identity/context to rank local matches and create a 12-field research plan. No claim-ready conclusion.</p>
+            </button>
+            <button type="button" onClick={() => setSearchPurpose("verified_case")} className={cn("text-left rounded-lg border p-3 transition-colors", searchPurpose === "verified_case" ? "border-emerald-500/50 bg-emerald-500/10" : "border-neutral-800 bg-neutral-950/40")}>
+              <div className="text-xs font-semibold text-neutral-100">Verified case search</div>
+              <p className="text-[11px] text-neutral-500 mt-1">Use after authority, claimant paperwork, and source-specific privacy requirements are reviewed.</p>
+            </button>
+            {searchPurpose === "verified_case" && <label className="md:col-span-2 flex items-start gap-2 text-xs text-neutral-300"><input type="checkbox" checked={paperworkVerified} onChange={e => setPaperworkVerified(e.target.checked)} className="mt-0.5 accent-cyan-400" /> I confirm an operator reviewed required claim authority, identity/relationship evidence, and the source-specific privacy path. This does not authorize filing or outreach.</label>}
+          </div>
+
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/50 p-3 text-[11px] text-neutral-400">
+            <span className="font-semibold text-neutral-200">Source validation:</span> Field 1 can return verified matches from the local state-unclaimed-property index. Fields 2–12 produce a governed case checklist until an approved data import or source connector is available; identity-gated sources remain claimant/human-operated.
+          </div>
           {/* Form Inputs Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Owner / Claimant Name */}
@@ -706,7 +733,24 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
           </div>
 
           {/* Search Action Submit Button */}
-          <div className="flex justify-end pt-2">
+          <div className="flex flex-wrap justify-end items-center gap-3 pt-2">
+            {isSearching && (
+              <div className="text-xs font-mono text-orange-300 rounded-lg border border-orange-500/25 bg-orange-500/10 px-3 py-2">
+                {elapsedSeconds < 15
+                  ? `Searching local index · estimated ${String(15 - elapsedSeconds).padStart(2, "0")}s remaining`
+                  : `Finalizing query · ${elapsedSeconds}s elapsed`}
+              </div>
+            )}
+            {isSearching && (
+              <Button
+                type="button"
+                onClick={handleStopSearch}
+                variant="outline"
+                className="border-red-500/40 text-red-300 hover:bg-red-500/10 font-bold font-mono text-xs px-5 h-10 rounded-xl"
+              >
+                Stop Search
+              </Button>
+            )}
             <Button
               type="submit"
               disabled={isSearching}
@@ -715,12 +759,12 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
               {isSearching ? (
                 <>
                   <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                  Searching 12 National Portals...
+                  Executing verified local search...
                 </>
               ) : (
                 <>
                   <Search className="w-4 h-4" />
-                  Execute 12-Field Search Query
+                  Execute Search
                 </>
               )}
             </Button>
@@ -735,7 +779,7 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
             <div>
               <div className="flex items-center space-x-2">
                 <span className="font-mono text-xs font-bold text-neutral-100 uppercase tracking-wider">
-                  {results.length} Matches Found across 12 Fields
+                  {results.length} Verified Local Match{results.length === 1 ? "" : "es"}
                 </span>
                 <span className="text-neutral-600">•</span>
                 <span className="font-mono text-xs font-bold text-emerald-400">
@@ -745,6 +789,16 @@ export function SpecializedAssetSearch({ onSaveCase, onNavigateToTab }: Speciali
               <p className="text-[11px] font-mono text-neutral-450 mt-0.5">
                 Target: <strong className="text-neutral-200">{ownerName}</strong> {decedentName ? `(${decedentName})` : ''} | Jurisdiction: <strong className="text-neutral-200">{state}</strong>
               </p>
+              {searchMessage && <p className="text-[11px] font-mono text-orange-300 mt-2">{searchMessage}</p>}
+              {Object.keys(categoryCounts).length > 0 && (
+                <div className="mt-3 grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-1.5 max-w-3xl">
+                  {Object.entries(categoryCounts).map(([categoryId, count]) => (
+                    <div key={categoryId} className="rounded border border-neutral-800 bg-neutral-950/60 px-2 py-1.5 text-[10px] font-mono text-neutral-400">
+                      Field {categoryId}: <span className={count > 0 ? "text-emerald-400 font-bold" : "text-neutral-600"}>{count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="flex items-center space-x-3">

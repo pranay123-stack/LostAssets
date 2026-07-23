@@ -35,7 +35,15 @@ export const searchLostAssets = async (query: SearchQuery): Promise<AssetRecord[
     const searchLimit = statesToSearch.slice(0, query.generalHighValue ? 3 : 1);
 
     for (const st of searchLimit) {
-      const res = await fetch(`/api/scrape?firstName=${encodeURIComponent(fName)}&lastName=${encodeURIComponent(lName)}&state=${encodeURIComponent(st)}${query.generalHighValue ? "&highValue=true" : ""}`);
+      const params = new URLSearchParams({
+        firstName: fName,
+        lastName: lName,
+        state: st,
+        limit: String(query.resultLimit ?? 100),
+        claimantType: query.claimantType ?? "all",
+      });
+      if (query.generalHighValue) params.set("highValue", "true");
+      const res = await fetch(`/api/scrape?${params.toString()}`);
       const data = await res.json();
       
       if (data.records) {
@@ -47,7 +55,12 @@ export const searchLostAssets = async (query: SearchQuery): Promise<AssetRecord[
             amount: rec.amount,
             holderCompany: rec.company || "Unknown Custodian",
             state: rec.state || "CA",
-            address: rec.location || "State unclaimed registry escrow"
+            address: rec.location || "State unclaimed registry escrow",
+            stateId: rec.state_id,
+            categoryTitle: rec.category_title,
+            subType: rec.sub_type,
+            decedentName: rec.decedent_name,
+            source: rec.source
           });
         }
       }
