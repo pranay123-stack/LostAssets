@@ -86,6 +86,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "data/**/*",
       "package.json"
     ],
     "asar": true,

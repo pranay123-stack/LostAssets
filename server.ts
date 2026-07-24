@@ -11,14 +11,86 @@ import { createServer as createViteServer } from "vite";
 import multer from "multer";
 import AdmZip from "adm-zip";
 import { GoogleGenAI } from "@google/genai";
+import crypto from "crypto";
+import dotenv from "dotenv";
 import { HermesAgentHandler } from "./server/hermes-agent";
 
+dotenv.config();
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const SPACETIME_URL = process.env.SPACETIME_URL || "http://127.0.0.1:3001";
 
 app.use(cors());
 app.use(express.json());
+
+const LITE_COOKIE_NAME = "la_plus_lite_session";
+const LITE_SESSION_TTL_SECONDS = 60 * 60 * 8;
+
+function getLiteSessionSecret(): string | null {
+  const secret = process.env.LA_PLUS_SESSION_SECRET;
+  return secret && secret.length >= 32 ? secret : null;
+}
+
+function signLitePayload(payload: string): string | null {
+  const secret = getLiteSessionSecret();
+  return secret ? crypto.createHmac("sha256", secret).update(payload).digest("base64url") : null;
+}
+
+function readCookie(req: express.Request, name: string): string | undefined {
+  const cookies = req.headers.cookie || "";
+  return cookies.split(";").map(part => part.trim()).find(part => part.startsWith(`${name}=`))?.slice(name.length + 1);
+}
+
+function hasLiteSession(req: express.Request): boolean {
+  try {
+    const token = readCookie(req, LITE_COOKIE_NAME);
+    const [payload, signature] = token?.split(".") || [];
+    const expected = payload ? signLitePayload(payload) : null;
+    if (!payload || !signature || !expected || signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return session.scope === "lite-heir-data" && Number(session.exp) > Math.floor(Date.now() / 1000);
+  } catch {
+    return false;
+  }
+}
+
+function setLiteSessionCookie(res: express.Response, token: string): void {
+  const secure = process.env.NODE_ENV === "production" && process.env.LA_PLUS_DESKTOP_URL?.startsWith("https://") ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `${LITE_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${LITE_SESSION_TTL_SECONDS}${secure}`);
+}
+
+app.get("/api/auth/session", (req, res) => res.json({ authenticated: hasLiteSession(req) }));
+
+app.post("/api/auth/login", (req, res) => {
+  const configuredCode = process.env.LA_PLUS_ACCESS_CODE;
+  const secret = getLiteSessionSecret();
+  if (!configuredCode || !secret) return res.status(503).json({ error: "Secure lite-data access is not configured." });
+  const providedCode = String(req.body?.accessCode || "");
+  const expected = Buffer.from(configuredCode);
+  const actual = Buffer.from(providedCode);
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return res.status(401).json({ error: "Invalid access code." });
+  const payload = Buffer.from(JSON.stringify({ scope: "lite-heir-data", exp: Math.floor(Date.now() / 1000) + LITE_SESSION_TTL_SECONDS })).toString("base64url");
+  const signature = signLitePayload(payload);
+  if (!signature) return res.status(503).json({ error: "Secure lite-data access is not configured." });
+  setLiteSessionCookie(res, `${payload}.${signature}`);
+  res.json({ authenticated: true, expiresInSeconds: LITE_SESSION_TTL_SECONDS });
+});
+
+app.post("/api/auth/logout", (_req, res) => {
+  res.setHeader("Set-Cookie", `${LITE_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
+  res.json({ authenticated: false });
+});
+
+app.get("/api/lite-records", (req, res) => {
+  if (!hasLiteSession(req)) return res.status(401).json({ error: "Sign-in required." });
+  try {
+    const bundlePath = path.resolve("data", "lite-heir-records.json");
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json(JSON.parse(fs.readFileSync(bundlePath, "utf8")));
+  } catch {
+    res.status(503).json({ error: "The lite-data bundle is unavailable on this host." });
+  }
+});
 
 // Initialize Multer for ZIP file handling
 const storage = multer.memoryStorage();
