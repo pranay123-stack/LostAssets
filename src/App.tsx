@@ -33,6 +33,7 @@ import { SpecializedAssetSearch } from "./components/SpecializedAssetSearch";
 import { LostAssetsIQLogo } from "./components/LostAssetsIQLogo";
 import { DatabaseExplorer } from "./components/DatabaseExplorer";
 import { ReclaimIQ } from "./components/ReclaimIQ";
+import { LiteDataAccess } from "./components/LiteDataAccess";
 
 import { AssetRecord, Relative, SavedCase, SearchQuery, RecentSearch } from "./types";
 import { searchLostAssets, trackRelatives, AVAILABLE_STATES, ASSET_TYPES } from "./services/mockDataService";
@@ -67,7 +68,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<
     "workflow_home" | "client_intake" | "search_workbench" | "crm_pipeline" | "saved_cases" | "reclaim_iq" | "specialized_search" | "ca_bundling" | 
     "asset_combiner" | "ca_investigator_hub" | "campaigns" | "trace_osint" | 
-    "multistate_search" | "hermes" | "asset_db" | "regulations" | "import_csv" | "database_explorer" |
+    "multistate_search" | "hermes" | "asset_db" | "regulations" | "import_csv" | "database_explorer" | "lite_data" |
     "settings_admin"
   >("workflow_home");
   const [focusMode, setFocusMode] = useState(false);
@@ -646,6 +647,18 @@ export default function App() {
             >
               <BriefcaseBusiness className={cn("w-4 h-4", activeTab === "reclaim_iq" ? "text-orange-500" : "text-neutral-500")} />
               <div><span>RECLAIM IQ ENGINE</span><span className="block text-[9px] font-normal text-neutral-500 mt-0.5">401(k) · PBGC · abandoned plans</span></div>
+            </button>
+            <button
+              onClick={() => setActiveTab("lite_data")}
+              className={cn(
+                "w-full flex items-center space-x-2.5 px-3 py-2.5 text-xs font-semibold rounded-lg transition-all text-left",
+                activeTab === "lite_data"
+                  ? "bg-orange-500/10 text-orange-400 border border-orange-500/20 shadow-sm"
+                  : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/40"
+              )}
+            >
+              <Shield className={cn("w-4 h-4", activeTab === "lite_data" ? "text-orange-500" : "text-neutral-500")} />
+              <div><span>PROTECTED LITE DATA</span><span className="block text-[9px] font-normal text-neutral-500 mt-0.5">450 heir records · sign-in</span></div>
             </button>
           </div>
 
@@ -2327,6 +2340,8 @@ export default function App() {
           {activeTab === "reclaim_iq" && (
             <ReclaimIQ onOpenHermes={() => setActiveTab("hermes")} />
           )}
+
+          {activeTab === "lite_data" && <LiteDataAccess />}
 
           {/* 8) SPECIALIZED 12-FIELD ASSET SEARCH page */}
           {activeTab === "specialized_search" && (
