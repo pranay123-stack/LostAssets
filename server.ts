@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import http from "http";
 import { WebSocketServer } from "ws";
 import Database from "better-sqlite3";
@@ -28,6 +29,31 @@ const upload = multer({ storage: storage });
 const DATABASE_PATH = process.env.DATABASE_PATH || path.resolve("data.sqlite");
 const db = new Database(DATABASE_PATH);
 console.log(`Using SQLite database: ${DATABASE_PATH}`);
+
+// Safe for desktop-client startup checks: proves the API can read SQLite while
+// returning only the filename, never the absolute local path or database data.
+app.get("/api/health", (_req, res) => {
+  try {
+    db.prepare("SELECT 1 AS ok").get();
+    const databaseStats = fs.statSync(DATABASE_PATH);
+    res.json({
+      ok: true,
+      database: {
+        connected: true,
+        fileName: path.basename(DATABASE_PATH),
+        sizeBytes: databaseStats.size,
+      },
+      service: "LA Plus API",
+    });
+  } catch (error: any) {
+    res.status(503).json({
+      ok: false,
+      database: { connected: false },
+      service: "LA Plus API",
+      error: "Database health check failed.",
+    });
+  }
+});
 
 // Set up database table
 db.exec(`
